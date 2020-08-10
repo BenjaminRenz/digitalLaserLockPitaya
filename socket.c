@@ -22,6 +22,15 @@ enum {getGraph=0,getGraph_return=1,setSettings=2,setSettings_return=3,
 float settings[NUMSETTINGS]={1.0f,2.0f,3.0f,4.0f};
 int offsets[NUMLASERS]={10,50};
 
+uint32_t htonf(float in){
+    return htonl(*((uint32_t*)(&in)));
+}
+
+float ntohf(uint32_t in){
+    uint32_t temp=ntohl(in);
+    return *((float*)(&temp));
+}
+
 int send_all(int socket, void* buffer, size_t length){
     uint8_t* ptr=(uint8_t*)buffer;
     while(0<length){
@@ -58,7 +67,7 @@ int recv_all(int socket, void* buffer, size_t length){
     return 0;
 }
 
-int main(int argv, char* argc){
+int main(int argv, char** argc){
     int ret;    //return temp int
     //create tcp socket with ipv4 address, use AF_INET6  for ipv6
     int socket_fd=socket(AF_INET, SOCK_STREAM, 0);
@@ -100,15 +109,15 @@ int main(int argv, char* argc){
         fprintf(stdout,"Accepted connection from %s\n",inet_ntoa(clnt_address.sin_addr));
         while(1){
             //Recieve header
-            int header[2];
+            uint32_t header[2];
             ret=recv_all(accept_socket_fd,header,2*sizeof(int));
             if(ret){
                 printf("Disconnect while reciveing header.\n");
                 close(accept_socket_fd);
                 break;
             }
-            int32_t requestType=ntohl(header[0]);
-            int32_t dataLength =ntohl(header[1]);
+            uint32_t requestType=ntohl(header[0]);
+            uint32_t dataLength =ntohl(header[1]);
             if(MAXRECDATA<dataLength){
                 fprintf(stderr,"Requested transfer length of %d bytes is to long.\n",ntohl(header[1]));
                 close(accept_socket_fd);
@@ -138,10 +147,9 @@ int main(int argv, char* argc){
                         close(socket_fd);
                         exit(1);
                     }
-                    float* floatsp=(float*)rec_databuffp;
                     for(int i=0;i<NUMSETTINGS;i++){
-                        floatsp[i]=ntohl(floatsp[i]);
-                        printf("value was: %f\n",floatsp[i]);
+                        settings[i]=ntohf(((uint32_t*)rec_databuffp)[i]);
+                        printf("value was: %f\n",settings[i]);
                     }
                     header[0]=htonl(setSettings_return);
                     header[1]=htonl(0);
@@ -161,7 +169,7 @@ int main(int argv, char* argc){
                     send_all(accept_socket_fd,header,2*sizeof(int32_t));
                     uint32_t* send_databufferp=malloc(sizeof(int32_t)*NUMSETTINGS);
                     for(int i=0;i<NUMSETTINGS;i++){
-                        send_databufferp[i]=htonl(settings[i]);
+                        send_databufferp[i]=htonf(settings[i]);
                     }
                     send_all(accept_socket_fd,send_databufferp,NUMSETTINGS*sizeof(int32_t));
                     free(send_databufferp);
