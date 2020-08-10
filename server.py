@@ -5,19 +5,30 @@ import os
 import xml.etree.ElementTree as xmlET
 import socket
 import ctypes
-
+from enum import Enum
 #global settings
 oldConnectionsXmlPath="./digiLockPreviousConnections.xml"
-TCP_PORT = 420
+TCP_PORT = 4242
+ADCPRECISION = 10
+class MessageType(Enum):
+    getGraph=0
+    getGraph_return=1
+    setSettings=2
+    setSettings_return=3
+    getSettings=4
+    getSettings_return=5
+    
+
 
 def connect(Ip):
     print(f"Initializing connection to {Ip}")
     return
 
 class InitialConnectionDialog(PyQt5.QtGui.QDialog):
+    
     def __init__(self, *args, **kwargs):
         super(InitialConnectionDialog, self).__init__(*args, **kwargs)
-        
+        self.MainWindow=args[0]
         self.setWindowTitle("New Connection")
         
         #upper row for new connection
@@ -77,11 +88,13 @@ class InitialConnectionDialog(PyQt5.QtGui.QDialog):
         root.append(newElement)
         newTree = xmlET.ElementTree(root)
         newTree.write(oldConnectionsXmlPath)
-        super(InitialConnectionDialog, self).Ip=(newIp)
+        self.MainWindow.Ip=Ip
         self.accept()
+        
+    @PyQt5.QtCore.pyqtSlot()
     def on_oldConnectBtn_click(self):
         Ip=self.oldComboBox.currentText()
-        super(InitialConnectionDialog, self).Ip(Ip)
+        self.MainWindow.Ip=Ip
         self.accept()
      
     def closeEvent(self, evnt):
@@ -111,6 +124,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.ledit_set.setPlaceholderText("Enter a float")
         
         self.send_button = PyQt5.QtGui.QPushButton("Send Values", self)
+        self.send_button.clicked.connect(self.on_newSendBtn_click)
         
         self.ButtonLayout=PyQt5.QtGui.QHBoxLayout()
         
@@ -147,20 +161,45 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
         # plot data: x, y values
         self.PlotWidget.plot(hour, temperature)
-
-
+    
+    @PyQt5.QtCore.pyqtSlot()
+    def on_newSendBtn_click(self):
+        sendMessage(self.socket,MessageType.setSettings,self.settings)
+        recieveMessage(self.socket)
     def createTcpSocket():
-
-       
-       BUFFER_SIZE = 1024
-       MESSAGE = "redpit give plot!"
-       
        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
        self.socket.connect((self.Ip, TCP_PORT))
-       self.socket.send(MESSAGE)
-       data = s.recv(BUFFER_SIZE)
+       sendMessage(self.socket,MessageType.getSettings)
+       self.settings=recieveMessage(self.socket)
+       self.ledit_p=self.settings[0]
        
 
+def sendMessage(socket,type,data):
+    if(len(data)):
+        message = b''.join([struct.pack("!ii",type,len(data)) , struct.pack("!"+"i"*len(data),*data)])
+    else:
+        message = b''.join([struct.pack("!ii",type,len(data))])
+    socketsocket.sendall(message)
+
+def recieveMessage(socket):
+    buffer = s.recv(2)
+    header_tuple=socket.unpack("!ii",buffer)
+    attachment_size=header_tuple[1]
+    buffer = s.recv(attachment_size)
+    if(header_tuple[0]==MessageType.getSettings_return):
+        pass
+    else if(header_tuple[0]==MessageType.getGraph_return):
+        graphy=[]
+        for iter in iter_unpack("!i"):
+            graphy.append(iter*(1.0/(2**ADCPRECISION)))
+        return graphy
+    else if(header_tuple[0]==MessageType.setSettings_return):
+        #todo send float over network
+        pass
+    else:
+        print("Error, invalid MessageType revieved")
+    
+    
 def main():
     app = PyQt5.QtWidgets.QApplication(sys.argv)
     window = MainWindow()
