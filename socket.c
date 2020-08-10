@@ -1,6 +1,12 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
 #define PORT 4242
 #define BACKLOG 10
 int main(int argv, char* argc){
@@ -16,7 +22,7 @@ int main(int argv, char* argc){
     srv_address.sin_family=AF_INET;
     srv_address.sin_addr.s_addr=INADDR_ANY;
     srv_address.sin_port=htons(PORT);
-    ret=bind(server_fd, (struct sockaddr *)&srv_address, sizeof(srv_address))
+    ret=bind(socket_fd, (struct sockaddr *)&srv_address, sizeof(srv_address));
     if(ret<0){
         fprintf(stderr,"Could not bind to socket.\n");
         exit(1);
@@ -35,6 +41,7 @@ int main(int argv, char* argc){
         fprintf(stderr,"Accepting connection failed.\n");
         exit(1);
     }
+	fprintf(stdout,"Accepted connection from %s",inet_ntoa(clnt_address.sin_addr));
     //close socket
     int return_val=close(socket_fd);
     if(return_val!=0){

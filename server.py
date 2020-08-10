@@ -4,6 +4,7 @@ from pyqtgraph import PlotWidget,plot
 import os
 import xml.etree.ElementTree as xmlET
 import socket
+import struct
 import ctypes
 from enum import Enum
 #global settings
@@ -17,6 +18,8 @@ class MessageType(Enum):
     setSettings_return=3
     getSettings=4
     getSettings_return=5
+    getOffset=6
+    getOffset_return=7
     
 
 
@@ -75,8 +78,8 @@ class InitialConnectionDialog(PyQt5.QtGui.QDialog):
     
     @PyQt5.QtCore.pyqtSlot()
     def on_newConnectBtn_click(self):
-        newIp=self.ledit_ip.text()
-        print(f"Adding new Ip ({newIp}) to list of old ips")
+        Ip=self.ledit_ip.text()
+        print(f"Adding new Ip ({Ip}) to list of old ips")
         root = None
         if(self.oldConXmlTree == None):
             #need to create xmlDocumentFirst
@@ -84,7 +87,7 @@ class InitialConnectionDialog(PyQt5.QtGui.QDialog):
         else:
             root = self.oldConXmlTree.getroot()
         newElement=xmlET.Element("PreviousConnection")
-        newElement.set("IP", newIp)
+        newElement.set("IP", Ip)
         root.append(newElement)
         newTree = xmlET.ElementTree(root)
         newTree.write(oldConnectionsXmlPath)
@@ -166,10 +169,10 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
     def on_newSendBtn_click(self):
         sendMessage(self.socket,MessageType.setSettings,self.settings)
         recieveMessage(self.socket)
-    def createTcpSocket():
+    def createTcpSocket(self):
        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
        self.socket.connect((self.Ip, TCP_PORT))
-       sendMessage(self.socket,MessageType.getSettings)
+       sendMessage(self.socket,MessageType.getSettings,[])
        self.settings=recieveMessage(self.socket)
        self.ledit_p=self.settings[0]
        
@@ -178,7 +181,7 @@ def sendMessage(socket,type,data):
     if(len(data)):
         message = b''.join([struct.pack("!ii",type,len(data)) , struct.pack("!"+"i"*len(data),*data)])
     else:
-        message = b''.join([struct.pack("!ii",type,len(data))])
+        message = b''.join([struct.pack("!ii",int(type),int(len(data)))])
     socketsocket.sendall(message)
 
 def recieveMessage(socket):
@@ -188,12 +191,12 @@ def recieveMessage(socket):
     buffer = s.recv(attachment_size)
     if(header_tuple[0]==MessageType.getSettings_return):
         pass
-    else if(header_tuple[0]==MessageType.getGraph_return):
+    elif(header_tuple[0]==MessageType.getGraph_return):
         graphy=[]
         for iter in iter_unpack("!i"):
             graphy.append(iter*(1.0/(2**ADCPRECISION)))
         return graphy
-    else if(header_tuple[0]==MessageType.setSettings_return):
+    elif(header_tuple[0]==MessageType.setSettings_return):
         #todo send float over network
         pass
     else:
