@@ -10,7 +10,10 @@ from enum import Enum
 #global settings
 oldConnectionsXmlPath="./digiLockPreviousConnections.xml"
 TCP_PORT = 4242
+TCP_MAX_REC_CHUNK_SIZE = 4096
 ADCPRECISION = 10
+
+
 class MessageType(Enum):
     getGraph=0
     getGraph_return=1
@@ -106,25 +109,32 @@ class InitialConnectionDialog(PyQt5.QtGui.QDialog):
         
 
 class MainWindow(PyQt5.QtWidgets.QMainWindow):
+    ledit_settings_list=[]
     def __init__(self, *args, **kwargs):
         super(MainWindow, self).__init__( *args, **kwargs)
         self.setWindowTitle("Digital Locking Server")
         
+        
+        
         self.label_p = PyQt5.QtGui.QLabel("P: ")
         self.ledit_p = PyQt5.QtGui.QLineEdit()
         self.ledit_p.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.ledit_p)
        
         self.label_i = PyQt5.QtGui.QLabel("I: ")
         self.ledit_i = PyQt5.QtGui.QLineEdit()
         self.ledit_i.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.ledit_i)
         
         self.label_d = PyQt5.QtGui.QLabel("D: ")
         self.ledit_d = PyQt5.QtGui.QLineEdit()
         self.ledit_d.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.ledit_d)
         
         self.label_set = PyQt5.QtGui.QLabel("SetP: ")
         self.ledit_set = PyQt5.QtGui.QLineEdit()
         self.ledit_set.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.ledit_set)
         
         self.send_button = PyQt5.QtGui.QPushButton("Send Values", self)
         self.send_button.clicked.connect(self.on_newSendBtn_click)
@@ -167,40 +177,68 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
     
     @PyQt5.QtCore.pyqtSlot()
     def on_newSendBtn_click(self):
-        sendMessage(self.socket,MessageType.setSettings,self.settings)
-        recieveMessage(self.socket)
+        sendbuf=[]
+        for ledit in self.ledit_settings_list:
+            sendbuf.append(float(ledit.text()))
+        sendMessage(self.socket,MessageType.setSettings,sendbuf)
+        recieveMessage(self.socket,self.ledit_settings_list)
     def createTcpSocket(self):
        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
        self.socket.connect((self.Ip, TCP_PORT))
        sendMessage(self.socket,MessageType.getSettings,[])
-       self.settings=recieveMessage(self.socket)
-       self.ledit_p=self.settings[0]
+       recieveMessage(self.socket,self.ledit_settings_list)
        
 
+def recvall(socket,msg_size):
+    arr = bytearray(msg_size)
+    pos = 0
+    while pos < msg_size:
+        if(TCP_MAX_REC_CHUNK_SIZE<msg_size):
+            arr[pos:pos+TCP_MAX_REC_CHUNK_SIZE] = socket.recv(TCP_MAX_REC_CHUNK_SIZE)
+        else:
+            arr[pos:pos+msg_size] = socket.recv(msg_size)
+            pos += msg_size
+    return arr
+    
 def sendMessage(socket,type,data):
+    type=type.value
     if(len(data)):
-        message = b''.join([struct.pack("!ii",type,len(data)) , struct.pack("!"+"i"*len(data),*data)])
+        if(isinstance(data[0], float)):
+            message = b''.join([struct.pack("!ii",type,4*len(data)) , struct.pack("!"+"f"*len(data),*data)])
+        else:
+            message = b''.join([struct.pack("!ii",type,4*len(data)) , struct.pack("!"+"i"*len(data),*data)])
     else:
-        message = b''.join([struct.pack("!ii",int(type),int(len(data)))])
-    socketsocket.sendall(message)
+        message = b''.join([struct.pack("!ii",type,len(data))])
+    print(f"sending message {message}, of type {type}.")
+    socket.sendall(message)
 
-def recieveMessage(socket):
-    buffer = s.recv(2)
-    header_tuple=socket.unpack("!ii",buffer)
-    attachment_size=header_tuple[1]
-    buffer = s.recv(attachment_size)
-    if(header_tuple[0]==MessageType.getSettings_return):
-        pass
-    elif(header_tuple[0]==MessageType.getGraph_return):
+def recieveMessage(socket,ledit_settings_list):
+    buffer = recvall(socket,8)
+    header_tuple=struct.unpack("!ii",buffer)
+    requestType=header_tuple[0]
+    dataLength =header_tuple[1]
+    buffer = recvall(socket,dataLength)
+    
+    if(requestType==MessageType.getSettings_return.value):
+        print("Got from pitaya")
+        print(buffer)
+        buffer_tuple=struct.unpack("!"+"f"*(dataLength//4),buffer)
+        for i in range(len(ledit_settings_list)):
+            ledit_settings_list[i].setText(str(buffer_tuple[i]))
+    elif(requestType==MessageType.getGraph_return.value):
+        buffer_tuple=struct.unpack("!"+"i"*(dataLength//4),buffer)
         graphy=[]
         for iter in iter_unpack("!i"):
             graphy.append(iter*(1.0/(2**ADCPRECISION)))
         return graphy
-    elif(header_tuple[0]==MessageType.setSettings_return):
-        #todo send float over network
+    elif(requestType==MessageType.setSettings_return.value):
+        #No return
+        pass
+    elif(requestType==MessageType.getOffset_return.value):
+        buffer_tuple=struct.unpack("!"+"i"*(dataLength//4),buffer)
         pass
     else:
-        print("Error, invalid MessageType revieved")
+        print(f"Error, invalid MessageType revieved, got rq={requestType},dl={dataLength}")
     
     
 def main():
