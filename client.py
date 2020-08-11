@@ -112,7 +112,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
     ledit_settings_list=[]
     def __init__(self, *args, **kwargs):
         super(MainWindow, self).__init__( *args, **kwargs)
-        self.setWindowTitle("Digital Locking Server")
+        self.setWindowTitle("digitalLock Client")
         
         
         

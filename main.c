@@ -1,10 +1,10 @@
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <unistd.h>    //for sleep
-
+#include <stdio.h>      //for fprintf
+#include <stdint.h>     //for uint16_t
+#include <stdlib.h>     //for malloc
+#include <string.h>     //for memcpy
+#include <unistd.h>     //for sleep
+#include "network_thread.h"
 #include "redpitaya/rp.h"
-//#include ""
 
 void InitGenerator(){
     //Generate Scan Ramp
@@ -19,18 +19,43 @@ int main(int argc, char **argv){
     if(rp_Init()!=RP_OK){
         fprintf(stderr, "Red Pitaya API failed to initialize!\n");
     }
-    
     InitGenerator();
     
-    uint32_t buff_size=16384;
-    float* buffer=(float*) malloc(buff_size*sizeof(float));
+    
+    //create mutex
+    mtx_t mutex_network_acqbuffer;     //protects one buffer of oscilloscope data used for network transfer
+    if(thrd_success!=mtx_init(&mutex_network_acqbuffer,mtx_plain)){
+        exit(1);
+    }
+    //create condition
+    cnd_t condidion_mainthread_finished_memcpy;
+    if(thrd_success!=cnd_init(&condidion_mainthread_finished_memcpy)){
+        exit(1);
+    }
+    //create network_acq_buffer
+    int16_t* network_acqbufferP=(int16_t*) malloc(ADCBUFFERSIZE*sizeof(int16_t));
+    
+    //initialize interprocess communication sturct
+    struct threadinfo threadinf;
+    threadinf.mutex_rawdata_bufferP=&mutex_network_acqbuffer;
+    threadinf.condidion_mainthread_finished_memcpyP=&condidion_mainthread_finished_memcpy;
+    threadinf.network_acqBufferP=&network_acqbufferP;
+    
+    //create thread
+    thrd_t networkingThread;
+    if(thrd_success!=thrd_create(&networkingThread,thrd_startServer,(void*)&threadinf)){
+        exit(1);
+    }
+    
+
+    int16_t* acqbufferP=(int16_t*) malloc(ADCBUFFERSIZE*sizeof(int16_t));
     rp_AcqReset();
     rp_AcqSetDecimation(RP_DEC_8);
     
 	rp_AcqSetTriggerDelay(0);
 	
-    rp_AcqStart();  //this commands initiates the pitaya to start aquiring samples, but we need to wait a bit  to enable the trigger
-	sleep(10);   //sleep 10s
+    rp_AcqStart();  //this commands initiates the pitaya to start aquiring samples, but we need to wait a bit to enable the trigger
+	sleep(1);   //sleep 1s
 	
     rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE);
 	rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START);
@@ -47,17 +72,32 @@ int main(int argc, char **argv){
         rp_DpinSetState(RP_LED1,RP_HIGH);
         //printf("triggered\n");
         
+        uint32_t samplenum=ADCBUFFERSIZE;
+        rp_AcqGetOldestDataRaw(RP_CH_1,&samplenum,acqbufferP);
+        ret=mtx_trylock(&mutex_rawdata_buffer)
+        if(ret==thrd_success){
+            //networking thread wants us to copy data into buffer, so lock it and copy data
+            if(thrd_success!=mtx_lock(&mutex_network_acqbuffer)){
+                exit(1);
+            }
+            memcpy(network_acqbufferP,acqbufferP,sizeof(uint16_t)*ADCBUFFERSIZE);
+            if(thrd_success!=mtx_unlock(&mutex_network_acqbuffer)){
+                exit(1);
+            }
+            //inform the thread that we are finished
+            cnd_signal(&condidion_mainthread_finished_memcpy);
+        }else if(ret!=thrd_busy){   //proceed normally on thrd_busy
+            exit(1);
+        }
+        
         sleep(0.01);
         rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE);    //rearm trigger source
 
     }
-	rp_AcqGetOldestDataV(RP_CH_1, &buff_size, buffer);
-	int i;
-	for(i = 0; i < buff_size; i++){
-			printf("%f\n", buffer[i]);
-	}
 	/* Releasing resources */
-	free(buffer);
+	free(network_acqbufferP);
+    free(acqbufferP);
+    //TODO delete mutexes, signal and destroy thread
     rp_Release();
     return 0;
 }
