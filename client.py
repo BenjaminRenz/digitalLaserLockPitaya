@@ -5,8 +5,9 @@ import os
 import xml.etree.ElementTree as xmlET
 import socket
 import struct
-import ctypes
+#import ctypes
 from enum import Enum
+import worker
 #global settings
 oldConnectionsXmlPath="./digiLockPreviousConnections.xml"
 TCP_PORT = 4242
@@ -167,8 +168,21 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         #check if dialog is closed with the close button of the window and terminate the app if this is the case
         if(0 == dlg.exec_()):
             exit()
-        else:
-            self.createTcpSocket()
+        
+        #start network thread
+        self.networkingThread = PyQt5.QThread()
+        self.networkingThread.start()
+        
+        #place qObject inside this thread
+        self.network_worker = NetworkingWorker()
+        self.network_worker.moveToThread(self.networkingThread)
+        self.network_worker.start.emit("hello")
+        
+        self.network_worker.getGraph_return_signal.connect(self.getGraph_return)
+        self.network_worker.getSettings_return_signal.connect(self.getSettings_return)
+        
+        
+        
         hour = [1,2,3,4,5,6,7,8,9,10]
         temperature = [30,32,34,32,33,31,29,32,35,45]
 
@@ -182,13 +196,55 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             sendbuf.append(float(ledit.text()))
         sendMessage(self.socket,MessageType.setSettings,sendbuf)
         recieveMessage(self.socket,self.ledit_settings_list)
-    def createTcpSocket(self):
-       self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-       self.socket.connect((self.Ip, TCP_PORT))
-       sendMessage(self.socket,MessageType.getSettings,[])
-       recieveMessage(self.socket,self.ledit_settings_list)
-       
+        
+    @PyQt5.QtCore.pyqtSlot()
+    def getGraph_return(self):
+        pass
+    @PyQt5.QtCore.pyqtSlot()
+    def getSettings_return(self):
+        pass
+    @PyQt5.QtCore.pyqtSlot()
+    def networkTX_start(self):
+        pass
+    @PyQt5.QtCore.pyqtSlot()
+    def networkTX_end(self):
+        pass
+    
+    
 
+
+#see https://stackoverflow.com/questions/20324804/how-to-use-qthread-correctly-in-pyqt-with-movetothread
+class NetworkingWorker(PyQt5.QObject)
+    self.getGraph_return_signal = PyQt5.qtCore.Signal()
+    self.getSettings_return_signal = PyQt5.qtCore.Signal()
+    self.networkTX_start_signal = PyQt5.qtCore.Signal()
+    self.networkTX_end_signal = PyQt5.qtCore.Signal()
+    
+    
+    
+    def __init__(self, *args, **kwargs):
+        super(GenericWorker, self).__init__()
+        
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect((self.Ip, TCP_PORT))
+        sendMessage(self.socket,MessageType.getSettings,[])
+        recieveMessage(self.socket,self.ledit_settings_list)
+        
+        self.args = args
+        self.kwargs = kwargs
+        self.start.connect(self.run)
+
+        start = pyqtSignal(str)
+        
+        self.networkTX_start_signal.emit()
+
+    @PyQt5.QtCore.pyqtSlot()
+    def run(self, some_string_arg):
+        self.function(*self.args, **self.kwargs)
+       
+    
+    
+    
 def recvall(socket,msg_size):
     arr = bytearray(msg_size)
     pos = 0
