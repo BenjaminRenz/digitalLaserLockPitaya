@@ -7,13 +7,13 @@ import socket
 import struct
 #import ctypes
 from enum import Enum
-import worker
+import time #for sleep
 #global settings
 oldConnectionsXmlPath="./digiLockPreviousConnections.xml"
 TCP_PORT = 4242
 TCP_MAX_REC_CHUNK_SIZE = 4096
 ADCPRECISION = 10
-
+app=None
 
 class MessageType(Enum):
     getGraph=0
@@ -170,138 +170,179 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             exit()
         
         #start network thread
-        self.networkingThread = PyQt5.QThread()
-        self.networkingThread.start()
+        self.networkingThread_handler = PyQt5.QtCore.QThread()
+        self.networkingThread_handler.start()
         
         #place qObject inside this thread
-        self.network_worker = NetworkingWorker()
-        self.network_worker.moveToThread(self.networkingThread)
-        self.network_worker.start.emit("hello")
+        self.network_thread = NetworkingWorker(self.Ip)
         
-        self.network_worker.getGraph_return_signal.connect(self.getGraph_return)
-        self.network_worker.getSettings_return_signal.connect(self.getSettings_return)
+        self.network_thread.getGraph_return_signal.connect(self.getGraph_return)
+        self.network_thread.getSettings_return_signal.connect(self.getSettings_return)
+        self.network_thread.networkTX_start_signal.connect(self.networkTX_start)
+        self.network_thread.networkTX_end_signal.connect(self.networkTX_end)
+        #important, do this after the QObject has been moved to the new thread
+        self.network_thread.moveToThread(self.networkingThread_handler)
         
+        #get initial settings from redpitaya
+        self.network_thread.getSettings_signal.emit()
+        #timer to call getGraph repeadietely
+        self.graphUpdateTimer=PyQt5.QtCore.QTimer(self)
+        self.graphUpdateTimer.setInterval(1000)
+        self.graphUpdateTimer.timeout.connect(self.network_thread.getGraph_signal)
         
+        #self.network_thread.getGraph_signal.emit()
         
-        hour = [1,2,3,4,5,6,7,8,9,10]
-        temperature = [30,32,34,32,33,31,29,32,35,45]
+        self.graphUpdateTimer.start()
 
-        # plot data: x, y values
-        self.PlotWidget.plot(hour, temperature)
     
     @PyQt5.QtCore.pyqtSlot()
     def on_newSendBtn_click(self):
-        sendbuf=[]
+        settings=[]
         for ledit in self.ledit_settings_list:
-            sendbuf.append(float(ledit.text()))
-        sendMessage(self.socket,MessageType.setSettings,sendbuf)
-        recieveMessage(self.socket,self.ledit_settings_list)
+            settings.append(float(ledit.text()))
+        self.network_thread.setSettings_signal.emit(settings)
         
-    @PyQt5.QtCore.pyqtSlot()
-    def getGraph_return(self):
-        pass
-    @PyQt5.QtCore.pyqtSlot()
-    def getSettings_return(self):
-        pass
+    @PyQt5.QtCore.pyqtSlot(list)
+    def getGraph_return(self,list):
+        x=range(16384 )
+        self.PlotWidget.plot(x, list)
+        #self.PlotWidget.update()
+        app.processEvents()
+        
+    @PyQt5.QtCore.pyqtSlot(list)
+    def getSettings_return(self,list):
+        for i in range(len(self.ledit_settings_list)):
+            self.ledit_settings_list[i].setText(str(list[i]))
+            
     @PyQt5.QtCore.pyqtSlot()
     def networkTX_start(self):
-        pass
+        print("unhandeled networkStart in main")
+        
     @PyQt5.QtCore.pyqtSlot()
     def networkTX_end(self):
-        pass
-    
+        print("unhandeled networkEnd in main")
+        
     
 
 
 #see https://stackoverflow.com/questions/20324804/how-to-use-qthread-correctly-in-pyqt-with-movetothread
-class NetworkingWorker(PyQt5.QObject)
-    self.getGraph_return_signal = PyQt5.qtCore.Signal()
-    self.getSettings_return_signal = PyQt5.qtCore.Signal()
-    self.networkTX_start_signal = PyQt5.qtCore.Signal()
-    self.networkTX_end_signal = PyQt5.qtCore.Signal()
+class NetworkingWorker(PyQt5.QtCore.QObject):
+    #emitted signals
+    getGraph_signal = PyQt5.QtCore.Signal()
+    getSettings_signal = PyQt5.QtCore.Signal()
+    setSettings_signal = PyQt5.QtCore.Signal(list)
+    getOffset_signal = PyQt5.QtCore.Signal()    
+    #consumed signals
+    getGraph_return_signal = PyQt5.QtCore.Signal(list)
+    getSettings_return_signal = PyQt5.QtCore.Signal(list)
+    networkTX_start_signal = PyQt5.QtCore.Signal()
+    networkTX_end_signal = PyQt5.QtCore.Signal()
     
     
-    
-    def __init__(self, *args, **kwargs):
-        super(GenericWorker, self).__init__()
+    def __init__(self,Ip,*args, **kwargs):
+        super(NetworkingWorker, self).__init__()
+        
+        self.Ip=Ip
         
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect((self.Ip, TCP_PORT))
-        sendMessage(self.socket,MessageType.getSettings,[])
-        recieveMessage(self.socket,self.ledit_settings_list)
-        
+       
         self.args = args
         self.kwargs = kwargs
-        self.start.connect(self.run)
-
-        start = pyqtSignal(str)
-        
-        self.networkTX_start_signal.emit()
+        self.getGraph_signal.connect(self.getGraph)
+        self.getSettings_signal.connect(self.getSettings)
+        self.setSettings_signal.connect(self.setSettings)
+        self.getOffset_signal.connect(self.getOffset)
+                
+        print("Networking thread initialized")
 
     @PyQt5.QtCore.pyqtSlot()
-    def run(self, some_string_arg):
-        self.function(*self.args, **self.kwargs)
-       
-    
-    
-    
-def recvall(socket,msg_size):
-    arr = bytearray(msg_size)
-    pos = 0
-    while pos < msg_size:
-        if(TCP_MAX_REC_CHUNK_SIZE<msg_size):
-            arr[pos:pos+TCP_MAX_REC_CHUNK_SIZE] = socket.recv(TCP_MAX_REC_CHUNK_SIZE)
-        else:
-            arr[pos:pos+msg_size] = socket.recv(msg_size)
-            pos += msg_size
-    return arr
-    
-def sendMessage(socket,type,data):
-    type=type.value
-    if(len(data)):
-        if(isinstance(data[0], float)):
-            message = b''.join([struct.pack("!ii",type,4*len(data)) , struct.pack("!"+"f"*len(data),*data)])
-        else:
-            message = b''.join([struct.pack("!ii",type,4*len(data)) , struct.pack("!"+"i"*len(data),*data)])
-    else:
-        message = b''.join([struct.pack("!ii",type,len(data))])
-    print(f"sending message {message}, of type {type}.")
-    socket.sendall(message)
-
-def recieveMessage(socket,ledit_settings_list):
-    buffer = recvall(socket,8)
-    header_tuple=struct.unpack("!ii",buffer)
-    requestType=header_tuple[0]
-    dataLength =header_tuple[1]
-    buffer = recvall(socket,dataLength)
-    
-    if(requestType==MessageType.getSettings_return.value):
-        print("Got from pitaya")
-        print(buffer)
-        buffer_tuple=struct.unpack("!"+"f"*(dataLength//4),buffer)
-        for i in range(len(ledit_settings_list)):
-            ledit_settings_list[i].setText(str(buffer_tuple[i]))
-    elif(requestType==MessageType.getGraph_return.value):
-        buffer_tuple=struct.unpack("!"+"i"*(dataLength//4),buffer)
+    def getGraph(self):
+        self.networkTX_start_signal.emit()
+        #send request
+        type=MessageType.getGraph.value
+        message = struct.pack("!ii",type,0)
+        self.socket.sendall(message)
+        #recieve answer
+        buffer = self.recvall(8)
+        header_tuple = struct.unpack("!ii",buffer)
+        requestType = header_tuple[0]
+        dataLength = header_tuple[1]
+  
+        buffer = self.recvall(dataLength)
+        if(requestType!=MessageType.getGraph_return.value):
+            print("Error unexpected network answer")
+        data=struct.unpack("!"+str(dataLength//2)+"h",buffer)
         graphy=[]
-        for iter in iter_unpack("!i"):
+        for iter in data:
             graphy.append(iter*(1.0/(2**ADCPRECISION)))
-        return graphy
-    elif(requestType==MessageType.setSettings_return.value):
-        #No return
-        pass
-    elif(requestType==MessageType.getOffset_return.value):
-        buffer_tuple=struct.unpack("!"+"i"*(dataLength//4),buffer)
-        pass
-    else:
-        print(f"Error, invalid MessageType revieved, got rq={requestType},dl={dataLength}")
+        self.networkTX_end_signal.emit()
+        self.getGraph_return_signal.emit(graphy)
+    @PyQt5.QtCore.pyqtSlot(list)
+    def setSettings(self,list):    
+        self.networkTX_start_signal.emit()
+        #send settings
+        type=MessageType.setSettings.value
+        message = b''.join([struct.pack("!ii",type,4*len(list)) , struct.pack("!"+str(len(list))+"f",*list)])
+        self.socket.sendall(message)
+        #recieve answer
+        buffer = self.recvall(8)
+        header_tuple=struct.unpack("!ii",buffer)
+        requestType=header_tuple[0]
+        dataLength =header_tuple[1]
+        buffer = self.recvall(dataLength)
+        if(buffer!=b""):
+            print("Error unexpected network packet after setSettings")
+        self.networkTX_end_signal.emit()
     
-    
-def main():
-    app = PyQt5.QtWidgets.QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+    def getSettings(self):
+        print("getSettings sent")
+        self.networkTX_start_signal.emit()
+        
+        #send request
+        type=MessageType.getSettings.value
+        message = struct.pack("!ii",type,0)
+        self.socket.sendall(message)
+        #recieve answer
+        buffer = self.recvall(8)
+        header_tuple = struct.unpack("!ii",buffer)
+        requestType = header_tuple[0]
+        dataLength = header_tuple[1]
+        buffer = self.recvall(dataLength)
+        print("getSettings returned data")
 
-main()
+        settingslist = list(struct.unpack("!"+str(dataLength//4)+"f",buffer))
+        self.networkTX_end_signal.emit()
+        #TODO in main be carefull this is an tuple
+        print(settingslist)
+        self.getSettings_return_signal.emit(settingslist)
+        print("getSettings returned signal")
+
+    
+    def getOffset(self):
+        print("Not implemented yet")
+    
+    def recvall(self,msg_size):
+        arr = bytearray(msg_size)
+        pos = 0
+        while pos < msg_size:
+            if(TCP_MAX_REC_CHUNK_SIZE<msg_size):
+                bytesobj = self.socket.recv(TCP_MAX_REC_CHUNK_SIZE)
+                actuallyrevievedbytes=len(bytesobj)
+                arr[pos:pos+actuallyrevievedbytes]=bytesobj
+                pos += actuallyrevievedbytes
+            else:
+                bytesobj = self.socket.recv(msg_size)
+                actuallyrevievedbytes=len(bytesobj)
+                arr[pos:pos+actuallyrevievedbytes]=bytesobj
+                pos += actuallyrevievedbytes
+        return arr
+
+#def main():
+app = PyQt5.QtWidgets.QApplication(sys.argv)
+window = MainWindow()
+window.show()
+sys.exit(app.exec_())
+
+#main()
 

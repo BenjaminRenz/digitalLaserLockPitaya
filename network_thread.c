@@ -144,11 +144,7 @@ int thrd_startServer(void* threadinfp){
                     printf("Handle getGraph request\n");
                     //order the main thread to save the next aquisition into the buffer and wait for completion of this task
                     if(thrd_success!=cnd_wait(threadinf.condidion_mainthread_finished_memcpyP,threadinf.mutex_rawdata_bufferP)){
-                        exit(0);
-                    }
-                    //get exclusive access to the buffer
-                    if(thrd_success!=mtx_lock(threadinf.mutex_rawdata_bufferP)){
-                        exit(0);
+                        exit(1);
                     }
                     //swap byte order
                     for(int i=0;i<ADCBUFFERSIZE;i++){

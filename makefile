@@ -6,7 +6,10 @@ LDLIBS = -lm -lpthread -lrp
 SRCS=$(wildcard *.c)
 OBJS=$(SRCS:.c=)
 
-all: $(OBJS)
+all: server
+
+server: main.o network_thread.c
+	$(CC) $(LDFLAGS) $(LDLIBS) main.o network_thread.o -o server
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) $< -o $@

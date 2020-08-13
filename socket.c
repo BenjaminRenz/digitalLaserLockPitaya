@@ -99,7 +99,7 @@ int main(int argv, char** argc){
     while(1){
         //accept only one connection in que on this socket
         struct sockaddr_in clnt_address;
-        int clnt_len = sizeof(clnt_address);    //initializes as the size of clnt_address, accept will write the actual size of the clnt_address
+        unsigned int clnt_len = sizeof(clnt_address);    //initializes as the size of clnt_address, accept will write the actual size of the clnt_address
         int accept_socket_fd=accept(socket_fd,(struct sockaddr*)&clnt_address,&clnt_len);
         if(accept_socket_fd<0){
             fprintf(stderr,"Accepting connection failed.\n");

@@ -15,7 +15,7 @@ void InitGenerator(){
 }
 
 int main(int argc, char **argv){
-    
+    int ret;
     if(rp_Init()!=RP_OK){
         fprintf(stderr, "Red Pitaya API failed to initialize!\n");
     }
@@ -39,7 +39,7 @@ int main(int argc, char **argv){
     struct threadinfo threadinf;
     threadinf.mutex_rawdata_bufferP=&mutex_network_acqbuffer;
     threadinf.condidion_mainthread_finished_memcpyP=&condidion_mainthread_finished_memcpy;
-    threadinf.network_acqBufferP=&network_acqbufferP;
+    threadinf.network_acqBufferP=network_acqbufferP;
     
     //create thread
     thrd_t networkingThread;
@@ -74,12 +74,9 @@ int main(int argc, char **argv){
         
         uint32_t samplenum=ADCBUFFERSIZE;
         rp_AcqGetOldestDataRaw(RP_CH_1,&samplenum,acqbufferP);
-        ret=mtx_trylock(&mutex_rawdata_buffer)
+        ret=mtx_trylock(&mutex_network_acqbuffer);
         if(ret==thrd_success){
-            //networking thread wants us to copy data into buffer, so lock it and copy data
-            if(thrd_success!=mtx_lock(&mutex_network_acqbuffer)){
-                exit(1);
-            }
+            //networking thread wants us to copy data into buffer, copy data
             memcpy(network_acqbufferP,acqbufferP,sizeof(uint16_t)*ADCBUFFERSIZE);
             if(thrd_success!=mtx_unlock(&mutex_network_acqbuffer)){
                 exit(1);
