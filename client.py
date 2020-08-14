@@ -153,7 +153,15 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.ButtonLayout.addWidget(self.send_button)
         
         self.PlotWidget = PlotWidget()
-  
+        #init plot widget
+        self.x_range=range(16384)
+        y=[0]*16384
+        self.PlotWidget.setBackground('w')
+        self.PlotWidget.setLabel('left', 'Ch1 [V]')
+        self.PlotWidget.setLabel('bottom', 'n-th sample')
+        self.plot=self.PlotWidget.plot(self.x_range,y)
+        
+        
         self.globalLayout=PyQt5.QtGui.QVBoxLayout()
         self.globalLayout.addWidget(self.PlotWidget)
         self.globalLayout.addLayout(self.ButtonLayout)
@@ -204,8 +212,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
     @PyQt5.QtCore.pyqtSlot(list)
     def getGraph_return(self,list):
-        x=range(16384 )
-        self.PlotWidget.plot(x, list)
+        self.plot.setData(self.x_range, list)
         #self.PlotWidget.update()
         app.processEvents()
         

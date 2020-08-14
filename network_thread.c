@@ -154,6 +154,7 @@ int thrd_startServer(void* threadinfp){
                     header[1]=htonl(ADCBUFFERSIZE*sizeof(uint16_t));
                     send_all(accept_socket_fd,header,2*sizeof(int32_t));
                     send_all(accept_socket_fd,threadinf.network_acqBufferP,ADCBUFFERSIZE*sizeof(uint16_t));
+                    printf("send Complete\n");
                 break;
                 case setSettings:{
                     printf("Handle setSettings request\n");
