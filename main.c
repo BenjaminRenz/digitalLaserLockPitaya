@@ -67,7 +67,7 @@ int main(int argc, char **argv){
 
     int16_t* acqbufferP=(int16_t*) malloc(ADCBUFFERSIZE*sizeof(int16_t));
     rp_AcqReset();
-    rp_AcqSetDecimation(RP_DEC_1);
+    rp_AcqSetDecimation(RP_DEC_1024);
     //TODO test this here, we get a strange timout down for the trigger for dec_8
     
 	rp_AcqSetTriggerDelay(8192);  //we can set the trigger conditions immediately since the delay will wait as long as we need
@@ -82,45 +82,11 @@ int main(int argc, char **argv){
         rp_DpinSetState(RP_LED1,RP_LOW);
         
         //initialize Delattime
-        double deltat=0.0;
-        getDeltatimeS();
-        rp_acq_trig_state_t state;
-        #ifdef triggerBySrc
         rp_acq_trig_src_t trgsrc;
         do{
-            deltat+=getDeltatimeS();
             rp_AcqGetTriggerSrc(&trgsrc);
         }while(trgsrc==RP_TRIG_SRC_AWG_PE&&deltat<=1.0);
-        #else
-        do{
-            deltat+=getDeltatimeS();
-            rp_AcqGetTriggerState(&state);
-        }while(state!=RP_TRIG_STATE_TRIGGERED&&deltat<=1.0);
-        #endif
-        
 
-        if(deltat>=1.0){
-            printf("triggered because of timeout\n");
-            rp_AcqGetTriggerState(&state);
-            if(state==RP_TRIG_STATE_TRIGGERED){
-                printf("State is still triggered\n");
-            }else if(state==RP_TRIG_STATE_WAITING){
-                printf("State is waiting\n");
-            }else{
-                printf("State is now %d\n",state);
-            }
-        }/*else{
-            printf("triggered normal\n");
-            rp_AcqGetTriggerState(&state);
-            if(state==RP_TRIG_STATE_TRIGGERED){
-                printf("State is still triggered\n");
-            }else if(state==RP_TRIG_STATE_WAITING){
-                printf("State is waiting\n");
-            }else{
-                printf("State is now %d\n",state);
-            }
-        }*/
-        
         //when this condition is met the red pitaya will reset the triggerSrc to Disabled
         rp_DpinSetState(RP_LED0,RP_LOW);
         rp_DpinSetState(RP_LED1,RP_HIGH);
@@ -141,11 +107,6 @@ int main(int argc, char **argv){
             exit(1);
         }
         rp_AcqStart();
-        /*getDeltatimeS();
-        double elapsedTime=0.0;
-        while(elapsedTime<0.01){
-            elapsedTime+=getDeltatimeS();
-        }*/
         rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE);    //rearm trigger source
     }
 	/* Releasing resources */
