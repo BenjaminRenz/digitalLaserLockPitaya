@@ -4,17 +4,30 @@
 #include <string.h>     //for memcpy
 #include <unistd.h>     //for sleep
 #include <time.h>       //for waiting for trigger timeout
+#include <float.h>      //for FLT_MIN 
 #include "network_thread.h"
 #include "redpitaya/rp.h"
 
-//#define triggerBySrc
+#define CHK_ERR(function)                                               \
+    do {                                                                \
+        int errorcode=function;                                         \
+        if(errorcode){                                                  \
+            printf("Error code %d occured\n",errorcode);                \
+            exit(1);                                                    \
+        }                                                               \
+    } while (0)
 
 void InitGenerator(float freq){
     //Generate Scan Ramp
-    rp_GenFreq(RP_CH_1,freq);
-    rp_GenAmp(RP_CH_1,1.0);
-    rp_GenWaveform(RP_CH_1, RP_WAVEFORM_TRIANGLE);
-    rp_GenOutEnable(RP_CH_1);
+    CHK_ERR(rp_GenFreq(RP_CH_1,freq));
+    CHK_ERR(rp_GenAmp(RP_CH_1,1.0));
+    CHK_ERR(rp_GenWaveform(RP_CH_1, RP_WAVEFORM_TRIANGLE));
+    CHK_ERR(rp_GenOutEnable(RP_CH_1));
+    
+    CHK_ERR(rp_GenWaveform(RP_CH_2, RP_WAVEFORM_DC));
+    CHK_ERR(rp_GenAmp(RP_CH_2,0));
+    CHK_ERR(rp_GenOffset(RP_CH_2,0.0));
+    CHK_ERR(rp_GenOutEnable(RP_CH_2));
 }
 
 double getDeltatimeS(void){
@@ -30,7 +43,35 @@ double getDeltatimeS(void){
     return deltatime;
 }
 
+void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t deadzoneSize,uint16_t* peaksx_returnp,float* peaksy_returnp){
+    for(uint16_t peakNum=0;peakNum<numOfPeaks;peakNum++){
+        uint16_t bestx=0;
+        float    besty=FLT_MIN;
+        for(uint16_t sampleNum=0;sampleNum<numOfPoints;sampleNum++){
+            //check for deadzone
+            int deadzoneHit=0;
+            for(int deadzone=0;deadzone<peakNum;deadzone++){
+                if((peaksx_returnp[deadzone]-deadzoneSize)<sampleNum&&sampleNum<(peaksx_returnp[deadzone]+deadzoneSize)){
+                    deadzoneHit=1;
+                }
+            }
+            if(deadzoneHit){
+                continue;
+            }
+            //check if current point is higher then last one
+            if(best_y<ydata[sampleNum]){
+                besty=ydata[sampleNum];
+                bestx=sampleNum;
+            }
+        }
+        peaksx_returnp[peakNum]=sampleNum;
+        peaksy_returnp[peakNum]=besty;
+    }
+    return;
+}
+
 int main(int argc, char **argv){
+    
     int ret;
     if(rp_Init()!=RP_OK){
         fprintf(stderr, "Red Pitaya API failed to initialize!\n");
@@ -66,34 +107,36 @@ int main(int argc, char **argv){
     
 
     int16_t* acqbufferP=(int16_t*) malloc(ADCBUFFERSIZE*sizeof(int16_t));
-    rp_AcqReset();
-    rp_AcqSetDecimation(RP_DEC_1024);
-    //TODO test this here, we get a strange timout down for the trigger for dec_8
+    CHK_ERR(rp_AcqReset());
+    //TODO test rp_AcqSetDecimationFactor(uint32_t decimation); instead
+    CHK_ERR(rp_AcqSetDecimation(RP_DEC_1024));
     
-	rp_AcqSetTriggerDelay(8192);  //we can set the trigger conditions immediately since the delay will wait as long as we need
+	CHK_ERR(rp_AcqSetTriggerDelay(8192));  //we can set the trigger conditions immediately since the delay will wait as long as we need
 	
-    rp_AcqStart();  //this commands initiates the pitaya to start aquiring samples
+    CHK_ERR(rp_AcqStart());  //this commands initiates the pitaya to start aquiring samples
 	
-    rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE);
-	rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START);
+    CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
+	CHK_ERR(rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START));
+    
+    
     
     while(1){
-        rp_DpinSetState(RP_LED0,RP_HIGH);
-        rp_DpinSetState(RP_LED1,RP_LOW);
+        CHK_ERR(rp_DpinSetState(RP_LED0,RP_HIGH));
+        CHK_ERR(rp_DpinSetState(RP_LED1,RP_LOW));
         
         //initialize Delattime
         rp_acq_trig_src_t trgsrc;
         do{
             rp_AcqGetTriggerSrc(&trgsrc);
-        }while(trgsrc==RP_TRIG_SRC_AWG_PE&&deltat<=1.0);
+        }while(trgsrc==RP_TRIG_SRC_AWG_PE);
 
         //when this condition is met the red pitaya will reset the triggerSrc to Disabled
-        rp_DpinSetState(RP_LED0,RP_LOW);
-        rp_DpinSetState(RP_LED1,RP_HIGH);
+        CHK_ERR(rp_DpinSetState(RP_LED0,RP_LOW));
+        CHK_ERR(rp_DpinSetState(RP_LED1,RP_HIGH));
         //printf("triggered\n");
         
         uint32_t samplenum=ADCBUFFERSIZE;
-        rp_AcqGetOldestDataRaw(RP_CH_1,&samplenum,acqbufferP);
+        CHK_ERR(rp_AcqGetOldestDataRaw(RP_CH_1,&samplenum,acqbufferP));
         ret=mtx_trylock(&mutex_network_acqbuffer);
         if(ret==thrd_success){
             //networking thread wants us to copy data into buffer, copy data
@@ -106,8 +149,9 @@ int main(int argc, char **argv){
         }else if(ret!=thrd_busy){   //proceed normally on thrd_busy
             exit(1);
         }
-        rp_AcqStart();
-        rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE);    //rearm trigger source
+        
+        CHK_ERR(rp_AcqStart());
+        CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
     }
 	/* Releasing resources */
 	free(network_acqbufferP);

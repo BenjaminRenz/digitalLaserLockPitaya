@@ -1,7 +1,0 @@
-Hi all,
-
-when triggering with low decimation values in between DEC_1 and DEC_8, the RedPitaya will not trigger in some cases (every 100th time). By using a second ssh terminal and opening top and holding f-11, which will load the processor I can greately increase this rate to about every 2nd time.
-
-For my project I need to trigger to the start of the arbitrary waveform generator, hence I'm using this branch:
-https://github.com/HrRossi/RedPitaya/tree/dev_dac_trigger
-I have provided a minimal working example down below:

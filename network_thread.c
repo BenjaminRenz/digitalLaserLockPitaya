@@ -43,7 +43,7 @@ int send_all(int socket, void* buffer, size_t length){
             return 1;   //Error
         }
         ptr+=bytes_transm;
-        length-=bytes_transm;
+        length-=(size_t)bytes_transm;
     }
     return 0;
 }
@@ -61,7 +61,7 @@ int recv_all(int socket, void* buffer, size_t length){
             return 1;   //Error
         }
         ptr+=bytes_rec;
-        length-=bytes_rec;
+        length-=(size_t)bytes_rec;
     }
     return 0;
 }
@@ -148,7 +148,7 @@ int thrd_startServer(void* threadinfp){
                     }
                     //swap byte order
                     for(int i=0;i<ADCBUFFERSIZE;i++){
-                        threadinf.network_acqBufferP[i]=htons(threadinf.network_acqBufferP[i]);
+                        threadinf.network_acqBufferP[i]=(int16_t)htons((uint16_t)threadinf.network_acqBufferP[i]);
                     }
                     header[0]=htonl(getGraph_return);
                     header[1]=htonl(ADCBUFFERSIZE*sizeof(uint16_t));
@@ -205,7 +205,7 @@ int thrd_startServer(void* threadinfp){
                     send_all(accept_socket_fd,header,2*sizeof(int32_t));
                     uint32_t* send_databufferp=malloc(sizeof(int32_t)*NUMLASERS);
                     for(int i=0;i<NUMLASERS;i++){
-                        send_databufferp[i]=htonl(offsets[i]);
+                        send_databufferp[i]=htonl((uint32_t)offsets[i]);
                     }
                     send_all(accept_socket_fd,send_databufferp,NUMLASERS*sizeof(int32_t));
                     free(send_databufferp);
