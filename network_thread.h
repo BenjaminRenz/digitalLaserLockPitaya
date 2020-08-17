@@ -9,7 +9,7 @@ struct threadinfo{
     int16_t* network_acqBufferP;
     mtx_t* mutex_settingsP;
     float* settingsP;
-    mtx_t* mutex_offsetsP;
+    mtx_t* mutex_new_operation_modeP;
     uint16_t offsetsP;
 };
 
