@@ -147,13 +147,23 @@ int thrd_startServer(void* threadinfp){
                         exit(1);
                     }
                     //swap byte order
-                    for(int i=0;i<ADCBUFFERSIZE;i++){
-                        threadinf.network_acqBufferP[i]=(int16_t)htons((uint16_t)threadinf.network_acqBufferP[i]);
-                    }
+                    /*for(int i=0;i<ADCBUFFERSIZE;i++){
+                        uint32_t temp=htonf((uint32_t)threadinf.network_acqBufferP[i]);
+                        threadinf.network_acqBufferP[i]=*((float*)(&temp));
+                        
+                    }*/
+                    printf("Start response\n");
                     header[0]=htonl(getGraph_return);
-                    header[1]=htonl(ADCBUFFERSIZE*sizeof(uint16_t));
+                    header[1]=htonl(ADCBUFFERSIZE*sizeof(float));
                     send_all(accept_socket_fd,header,2*sizeof(int32_t));
-                    send_all(accept_socket_fd,threadinf.network_acqBufferP,ADCBUFFERSIZE*sizeof(uint16_t));
+                    /*send_all(accept_socket_fd,threadinf.network_acqBufferP,ADCBUFFERSIZE*sizeof(float));
+                    */
+                    uint32_t* send_databufferp=malloc(sizeof(float)*ADCBUFFERSIZE);
+                    for(int i=0;i<ADCBUFFERSIZE;i++){
+                        send_databufferp[i]=htonf(threadinf.network_acqBufferP[i]);
+                    }
+                    send_all(accept_socket_fd,send_databufferp,ADCBUFFERSIZE*sizeof(float));
+                    free(send_databufferp);
                     printf("send Complete\n");
                 break;
                 case setSettings:{

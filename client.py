@@ -275,14 +275,13 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
         header_tuple = struct.unpack("!ii",buffer)
         requestType = header_tuple[0]
         dataLength = header_tuple[1]
-  
+        print(f"expecting {dataLength} bytes or {dataLength/4} floats")
         buffer = self.recvall(dataLength)
         if(requestType!=MessageType.getGraph_return.value):
             print("Error unexpected network answer")
-        data=struct.unpack("!"+str(dataLength//2)+"h",buffer)
-        graphy=[]
-        for iter in data:
-            graphy.append(iter*(1.0/(2**ADCPRECISION)))
+        data=struct.unpack("!"+str(dataLength//4)+"f",buffer)
+        print(data[:20])
+        graphy=list(data)
         self.networkTX_end_signal.emit()
         self.getGraph_return_signal.emit(graphy)
     @PyQt5.QtCore.pyqtSlot(list)

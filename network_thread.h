@@ -6,7 +6,7 @@
 struct threadinfo{
     mtx_t* mutex_rawdata_bufferP;
     cnd_t* condidion_mainthread_finished_memcpyP;
-    int16_t* network_acqBufferP;
+    float* network_acqBufferP;
     mtx_t* mutex_settingsP;
     float* settingsP;
     mtx_t* mutex_new_operation_modeP;
