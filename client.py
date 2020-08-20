@@ -154,8 +154,8 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
         self.PlotWidget = PlotWidget()
         #init plot widget
-        self.x_range=range(16384)
-        y=[0]*16384
+        self.x_range=range(8192)
+        y=[0]*8192
         self.PlotWidget.setBackground('w')
         self.PlotWidget.setLabel('left', 'Ch1 [V]')
         self.PlotWidget.setLabel('bottom', 'n-th sample')
