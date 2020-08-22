@@ -8,32 +8,29 @@
 #include "network_thread.h"
 #include "redpitaya/rp.h"
 
-enum {operation_mode_scan,operation_mode_characterize,operation_mode_lock};
 
 //Buffer size is 2^14 samples
 //Sample rate is 125MSamples
 
-//SLOW SCAN MODE IS 1Hz
+//Red pitaya will trigger in the middle of the rising 
+
+//SLOW SCAN MODE IS CLOSE TO 0.5Hz
 //time to fill full buffer is is (2^14)*(2^13)/(125e6)=1.073s
 #define SLOW_DEC RP_DEC_8192
-//index of the last sample floor(0.25s*125e6Msampl/SLOW_DEC)-1
-#define SLOW_FIRST_SAMPLE_IDX_RAMP 3813
-//index of the last sample ceil(0.75s*125e6Msampl/SLOW_DEC)-1
-#define SLOW_LAST_SAMPLE_IDX_RAMP 11444
+//chose freq so that fits exactely into twice the aquistion buffer 1/1.073s
+#define SLOW_FREQ (0.931322f/2.0f)
 
-//FAST SCAN MODE IS 100Hz
+//FAST SCAN MODE IS CLOSE TO 50Hz
 //time to fill full buffer is is (2^14)*(2^6)/(125e6)=0.00838s
 #define FAST_DEC RP_DEC_64
-//index of the last sample floor(0.0025s*125Msampl/FAST_DEC)-1
-#define FAST_FIRST_SAMPLE_IDX_RAMP 4881
-//index of the last sample ceil(0.0075s*125Msampl/FAST_DEC)-1
-#define FAST_LAST_SAMPLE_IDX_RAMP 14648
+//chose freq so that fits exactely into twice the aquistion buffer 1/0.00838s
+#define FAST_FREQ (119.209f/2.0f)
 
 #define CHK_ERR(function)                                                   \
     do {                                                                    \
         int errorcode=function;                                             \
         if(errorcode){                                                      \
-            printf("Error code %d occured in line __LINE__\n",errorcode);   \
+            printf("Error code %d occured in line %d\n",errorcode,__LINE__);\
         }                                                                   \
     } while (0)
 
@@ -41,19 +38,27 @@ enum {operation_mode_scan,operation_mode_characterize,operation_mode_lock};
     do {                                                                    \
         int errorcode=function;                                             \
         if(errorcode){                                                      \
-            printf("Error code %d occured in line __LINE__\n",errorcode);   \
+            printf("Error code %d occured in line %d\n",errorcode,__LINE__);\
             action;                                                         \
         }                                                                   \
     } while (0)
 
 void SetGenerator(rp_channel_t ScanChannel, float ScanFrequency, float OtherChannelOffset){
-    printf("SetGenerator to freq=%f",ScanFrequency);
-    //Generate Scan Ramp on "ScanChannel"
+    CHK_ERR(rp_GenWaveform(ScanChannel, RP_WAVEFORM_ARBITRARY));
+    float* wavetable=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
+    for(uint16_t index=0;index<ADCBUFFERSIZE;index++){
+        if(index<ADCBUFFERSIZE/2){
+            wavetable[index]=-1.0f+index*4.0f/ADCBUFFERSIZE;
+        }else{
+            wavetable[index]=3.0f-index*4.0f/ADCBUFFERSIZE;
+        }
+    }
+    CHK_ERR(rp_GenArbWaveform(ScanChannel, wavetable, ADCBUFFERSIZE));
+    free(wavetable);
     CHK_ERR(rp_GenFreq(ScanChannel,ScanFrequency));
-    CHK_ERR(rp_GenAmp(ScanChannel,-1.0));
-    CHK_ERR(rp_GenWaveform(ScanChannel, RP_WAVEFORM_TRIANGLE));
+    CHK_ERR(rp_GenAmp(ScanChannel,1.0));
     CHK_ERR(rp_GenOutEnable(ScanChannel));
-
+    
     rp_channel_t otherChannel;
     if(ScanChannel==RP_CH_1){
         otherChannel=RP_CH_2;
@@ -78,6 +83,27 @@ double getDeltatimeS(void){
     double deltatime=((double)(end-start))/CLOCKS_PER_SEC;
     start=end;
     return deltatime;
+}
+
+void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
+    int swapped_flag;
+    uint16_t numOfSwaps=numOfPeaks;
+    do{
+        swapped_flag=0;
+        for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
+            if(peaksxP[bubble_offset+1]<peaksxP[bubble_offset]){
+                //swap peaksx
+                uint16_t tempx=peaksxP[bubble_offset];
+                peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
+                peaksxP[bubble_offset+1]=tempx;
+                //swap peaksy
+                float tempy=peaksyP[bubble_offset];
+                peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
+                peaksyP[bubble_offset+1]=tempy;
+            }
+            numOfSwaps--;
+        }
+    }while(swapped_flag);
 }
 
 void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t deadzoneSize,uint16_t* peaksx_returnp,float* peaksy_returnp){
@@ -107,22 +133,23 @@ void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t de
     return;
 }
 
-void waitTrgUnarmAndGetData(rp_acq_trig_src_t last_trgsrc, float* acqbufferP){
+void waitTrgUnarmAndGetData(rp_acq_trig_src_t last_trgsrc, float* acqbufferP, uint32_t numOfSamples){
+    
     CHK_ERR(rp_DpinSetState(RP_LED0,RP_HIGH));
     CHK_ERR(rp_DpinSetState(RP_LED1,RP_LOW));
     rp_acq_trig_src_t trgsrc;
-    
     //TODO check if this triggers instantly and if so we took to long with out last data processing
     do{
         rp_AcqGetTriggerSrc(&trgsrc);
     }while(trgsrc==last_trgsrc);
-
     //when this condition is met the red pitaya will reset the triggerSrc to Disabled
     CHK_ERR(rp_DpinSetState(RP_LED0,RP_LOW));
     CHK_ERR(rp_DpinSetState(RP_LED1,RP_HIGH));
-    
-    uint32_t samplenum=ADCBUFFERSIZE;
-    CHK_ERR(rp_AcqGetOldestDataV(RP_CH_1,&samplenum,acqbufferP));
+
+    CHK_ERR(rp_AcqGetLatestDataV(RP_CH_1,&numOfSamples,acqbufferP));
+    if(numOfSamples!=ADCBUFFERSIZE){
+        printf("Missing DATA\n");
+    }
     
     /*for(int i=0;i<ADCBUFFERSIZE;i++){
         if(acqbufferP[i]>0.9){
@@ -133,48 +160,131 @@ void waitTrgUnarmAndGetData(rp_acq_trig_src_t last_trgsrc, float* acqbufferP){
 
 void doLock(int firstrun,float* acqbufferP){
     if(firstrun){
-        SetGenerator(RP_CH_1,100.0,0.0);
+        SetGenerator(RP_CH_1,FAST_FREQ,0.0);
         CHK_ERR(rp_AcqSetDecimation(FAST_DEC));
-        CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));  //trigger set to capture full waveform, SetTriggerDelay sets offset from center (ADCBUFFERSIZE/2), so a full buffer is captured
+        CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));       //trigger will be centered around maximum of triangle
         
-        CHK_ERR(rp_AcqStart());  //this commands initiates the pitaya to start aquiring samples
+        CHK_ERR(rp_AcqStart());  //start aquisition into ringbuffer
         CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
         CHK_ERR(rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START));
     }
-    waitTrgUnarmAndGetData(RP_TRIG_SRC_AWG_PE,acqbufferP);
+    waitTrgUnarmAndGetData(RP_TRIG_SRC_AWG_PE,acqbufferP,ADCBUFFERSIZE);
+    //rearm aquisition
     CHK_ERR(rp_AcqStart());
-    CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
+    CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
+    
 }
 
 void doScan(int firstrun,float* acqbufferP){
     if(firstrun){
         //Setup Generator
-        SetGenerator(RP_CH_1,100.0,0.0);
+        SetGenerator(RP_CH_1,FAST_FREQ,0.0);
         //Setup Aquisition
-            //TODO CHANGE TO FAST_DEC
         CHK_ERR(rp_AcqSetDecimation(FAST_DEC));
-        CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));  //trigger set to capture full waveform, SetTriggerDelay sets offset from center (ADCBUFFERSIZE/2), so a full buffer is captured
+        CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2)); 
         //Start aquisition
-        CHK_ERR(rp_AcqStart());  //this commands initiates the pitaya to start aquiring samples
+        CHK_ERR(rp_AcqStart());  //start aquisition into ringbuffer
         CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
         CHK_ERR(rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START));
     }
-    waitTrgUnarmAndGetData(RP_TRIG_SRC_AWG_PE,acqbufferP);
+    waitTrgUnarmAndGetData(RP_TRIG_SRC_AWG_PE,acqbufferP,ADCBUFFERSIZE);
+    //rearm aquisition
     CHK_ERR(rp_AcqStart());
-    CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
+    CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    
 }
+
+#define MaxNumOfPeaks_Scan_Cav 10
+#define MaxNumOfPeaks_Scan_Grat 10
+#define DeadzoneSamplepoints_Scan_Cav 100
+#define DeadzoneSamplepoints_Scan_Grat 100
+#define PeakDiscardFactor 0.6
+#define NumScanSteps 1000
+enum {char_step_scan_cav,char_step_scan_grat,char_step_scan_cav_check_range,char_step_scan_cav_mv_grat,char_step_finished};
 void doCharacterise(int firstrun,float* acqbufferP){
+    static int CharacterisationStep=char_step_scan_cav;
+    static uint16_t* peaksx_scan_cav_P;
+    static float* peaksy_scan_cav_P;
+    static uint16_t valid_peaks_scan_cav=0;
+    static float cav_voltage_per_peakdist=0.0f;
+    static float grat_voltage_per_peakdist=0.0f;
     if(firstrun){
-        SetGenerator(RP_CH_1,1.0,0.0);
+        SetGenerator(RP_CH_1,SLOW_FREQ,0.0);
         CHK_ERR(rp_AcqSetDecimation(SLOW_DEC));
         CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));
         CHK_ERR(rp_AcqStart());  //this commands initiates the pitaya to start aquiring samples
         CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
         CHK_ERR(rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START));
     }
-    waitTrgUnarmAndGetData(RP_TRIG_SRC_AWG_PE,acqbufferP);
+    waitTrgUnarmAndGetData(RP_TRIG_SRC_AWG_PE,acqbufferP,ADCBUFFERSIZE);
     CHK_ERR(rp_AcqStart());
     CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
+    switch(CharacterisationStep){
+        case char_step_scan_cav:
+            //Setup generator for char_step_scan_grat
+            SetGenerator(RP_CH_2,SLOW_FREQ,0.0);
+            
+            peaksx_scan_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
+            peaksy_scan_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            sortPeaksX(MaxNumOfPeaks_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Cav;peak_idx++){    //ceck all other points except largest one if they are large enough
+                if(peaksy_scan_cav_P[0]*PeakDiscardFactor<peaksy_scan_cav_P[peak_idx]){
+                    valid_peaks_scan_cav++;
+                    printf("Cavity scan peak at (%d,%f)\n",peaksx_scan_cav_P[peak_idx],peaksy_scan_cav_P[peak_idx]);
+                }
+            }
+            for(uint16_t peak_idx=1;peak_idx<valid_peaks_scan_cav;peak_idx++){
+                //first factor is scan range of 2Vpp, the other part is delta_samples_between_peaks/total_num_samples_per_rising edge
+                cav_voltage_per_peakdist+=2.0f*((float)(peaksx_scan_cav_P[peak_idx]-peaksx_scan_cav_P[peak_idx-1]))/ADCBUFFERSIZE;
+            }
+            cav_voltage_per_peakdist/=valid_peaks_scan_cav;
+            //TODO set cav_voltage_per_peakdist
+            CharacterisationStep=char_step_scan_grat;
+            
+            break;
+        case char_step_scan_grat: ;//need this here
+            uint16_t valid_peaks_scan_grat=0;
+            uint16_t* peaksx_scan_grat_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Grat*sizeof(uint16_t));
+            float*    peaksy_scan_grat_P=(float*)malloc(MaxNumOfPeaks_Scan_Grat*sizeof(float));
+            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Grat,DeadzoneSamplepoints_Scan_Grat,peaksx_scan_grat_P,peaksy_scan_grat_P);
+            sortPeaksX(MaxNumOfPeaks_Scan_Grat,peaksx_scan_grat_P,peaksy_scan_grat_P);
+            printf("Grating scan peak at (%d,%f)\n",peaksx_scan_grat_P[0],peaksy_scan_grat_P[0]);
+            for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Grat;peak_idx++){    //ceck all other points except largest one if they are large enough
+                if(peaksy_scan_grat_P[0]*PeakDiscardFactor<peaksy_scan_grat_P[peak_idx]){
+                    valid_peaks_scan_grat++;
+                    printf("Grating scan peak at (%d,%f)\n",peaksx_scan_grat_P[peak_idx],peaksy_scan_grat_P[peak_idx]);
+                }
+            }
+            for(uint16_t peak_idx=1;peak_idx<valid_peaks_scan_grat;peak_idx++){
+                //first factor is scan range of 2Vpp, the other part is delta_samples_between_peaks/total_num_samples_per_rising edge
+                grat_voltage_per_peakdist+=2.0f*((float)(peaksx_scan_grat_P[peak_idx]-peaksx_scan_grat_P[peak_idx-1]))/ADCBUFFERSIZE;
+            }
+            grat_voltage_per_peakdist/=valid_peaks_scan_grat;
+            free(peaksx_scan_grat_P);
+            free(peaksy_scan_grat_P);
+            //Setup generator for char_step_scan_cav_check_range
+            
+            //TODO UNCOMMENT
+            //CharacterisationStep=char_step_scan_cav_check_range;
+            //SetGenerator(RP_CH_1,SLOW_FREQ,grat_voltage_per_peakdist);
+            
+            break;
+        case char_step_scan_cav_check_range:
+            
+            
+            //Setup generator for char_step_scan_cav_mv_grat
+            CharacterisationStep=char_step_scan_cav_mv_grat;
+            SetGenerator(RP_CH_1,SLOW_FREQ,grat_voltage_per_peakdist);
+            break;
+        case char_step_scan_cav_mv_grat:
+        
+            //TODO IF ALL SCANS ARE DONE CharacterisationStep=char_step_finished;
+            break;
+        case char_step_finished:
+            free(peaksx_scan_cav_P);
+            free(peaksy_scan_cav_P);
+            break;
+    }
 }
 
 int main(int argc, char **argv){
@@ -197,7 +307,7 @@ int main(int argc, char **argv){
 
     //create data structures which are protected by mutexes
     float* network_acqbufferP=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
-    int new_operation_mode=operation_mode_scan;
+    uint32_t new_operation_mode=operation_mode_scan;
 
 
     //initialize interprocess communication sturct
@@ -206,9 +316,9 @@ int main(int argc, char **argv){
     threadinf.mutex_rawdata_bufferP=&mutex_network_acqbuffer;
     threadinf.mutex_settingsP=&mutex_settings;
     threadinf.mutex_new_operation_modeP=&mutex_new_operation_mode;
-
+    
+    threadinf.new_operation_modeP=&new_operation_mode;
     threadinf.condidion_mainthread_finished_memcpyP=&condidion_mainthread_finished_memcpy;
-
     threadinf.network_acqBufferP=network_acqbufferP;
 
     //create thread
@@ -219,22 +329,30 @@ int main(int argc, char **argv){
 
     float* acqbufferP=(float*) malloc(ADCBUFFERSIZE*sizeof(float));
     CHK_ERR(rp_AcqReset());
-    
+    printf("do scan\n");
     doScan(1,acqbufferP);
     
     while(1){
-        //int ret;
-        int last_operation_mode=operation_mode_scan;
+        static uint32_t last_operation_mode=operation_mode_scan;
+        
         //check if a new mode of operation is requested
         mtx_lock(&mutex_new_operation_mode);
         if(last_operation_mode!=new_operation_mode){
             last_operation_mode=new_operation_mode;
             switch(new_operation_mode){
                 case operation_mode_scan:
+                    printf("sw scan\n");
                     doScan(1,acqbufferP);
                 break;
-                case operation_mode_characterize:
+                case operation_mode_characterise:
+                    printf("sw char\n");
                     doCharacterise(1,acqbufferP);
+                break;
+                case operation_mode_lock:
+                    printf("Not ready\n");
+                break;
+                default:
+                    printf("Error invalid opmode %d",new_operation_mode);
                 break;
             }
             mtx_unlock(&mutex_new_operation_mode);
@@ -244,13 +362,18 @@ int main(int argc, char **argv){
                 case operation_mode_scan:
                     doScan(0,acqbufferP);
                 break;
-                case operation_mode_characterize:
+                case operation_mode_characterise:
                     doCharacterise(0,acqbufferP);
+                break;
+                case operation_mode_lock:
+                    printf("Not ready\n");
+                break;
+                default:
+                    printf("Error invalid opmode %d",new_operation_mode);
                 break;
             }
             
         }
-        
         
         //Check if network thread is requesting data
         int ret=mtx_trylock(&mutex_network_acqbuffer);

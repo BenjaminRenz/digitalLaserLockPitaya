@@ -15,8 +15,25 @@
 #define NUMSETTINGS 4
 #define NUMLASERS 2
 
-enum {getGraph=0,getGraph_return=1,setSettings=2,setSettings_return=3,
-      getSettings=4,getSettings_return=5,getOffset=6,getOffset_return=7};
+enum {
+    getGraph=0,
+    getGraph_return=1,
+    setSettings=2,
+    setSettings_return=3,
+    getSettings=4,
+    getSettings_return=5,
+    getOffset=6,
+    getOffset_return=7,
+    
+    setOpmode=8,
+    setOpmode_return=9,
+    getOpmode=10,
+    getOpmode_return=11,
+    
+    getCharPeaks=12,
+    getCharPeaks_return=13
+    
+};
 
 float settings[NUMSETTINGS]={1.0f,2.0f,3.0f,4.0f};
 int offsets[NUMLASERS]={10,50};
@@ -221,6 +238,45 @@ int thrd_startServer(void* threadinfp){
                     free(send_databufferp);
                 }
                 break;
+                case setOpmode:{
+                    printf("Handle setOpmode request\n");
+                    if(dataLength!=sizeof(uint32_t)){
+                        fprintf(stderr,"Invalid data format for setOpmode.\n");
+                        close(accept_socket_fd);
+                        close(socket_fd);
+                        exit(1);
+                    }
+                    uint32_t opmode=ntohl(((uint32_t*)rec_databuffp)[0]);
+                    if(opmode!=operation_mode_scan&&opmode!=operation_mode_characterise&&opmode!=operation_mode_lock){
+                        fprintf(stderr,"Invalid opMode.\n");
+                        close(accept_socket_fd);
+                        close(socket_fd);
+                        exit(1);
+                    }
+                    mtx_lock(threadinf.mutex_new_operation_modeP);
+                    *(threadinf.new_operation_modeP)=opmode;
+                    mtx_unlock(threadinf.mutex_new_operation_modeP);
+                    header[0]=htonl(setOpmode_return);
+                    header[1]=0;
+                    send_all(accept_socket_fd,header,2*sizeof(uint32_t));
+                }
+                break;
+                case getOpmode:{
+                    printf("Handle getOpmode request\n");
+                    if(dataLength!=0){
+                        fprintf(stderr,"Invalid data format for setOpmode.\n");
+                        close(accept_socket_fd);
+                        close(socket_fd);
+                        exit(1);
+                    }
+                    mtx_lock(threadinf.mutex_new_operation_modeP);
+                    uint32_t opmode=*(threadinf.new_operation_modeP);
+                    mtx_unlock(threadinf.mutex_new_operation_modeP);
+                    header[0]=htonl(getOpmode_return);
+                    header[1]=htonl(sizeof(uint32_t));
+                    send_all(accept_socket_fd,header,2*sizeof(uint32_t));
+                    send_all(accept_socket_fd,&opmode,sizeof(uint32_t));
+                }
                 default:
                 break;
             }
