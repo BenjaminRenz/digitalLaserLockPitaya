@@ -277,7 +277,19 @@ int thrd_startServer(void* threadinfp){
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
                     send_all(accept_socket_fd,&opmode,sizeof(uint32_t));
                 }
+                case getCharPeaks:{
+                    printf("Handle getCharacterization request\n");
+                    if(dataLength!=0){
+                        fprintf(stderr,"Invalid data format for setOpmode.\n");
+                        close(accept_socket_fd);
+                        close(socket_fd);
+                        exit(1);
+                    }
+                    mtx_lock()
+                }
+                break;
                 default:
+                    printf("unknown command\n");
                 break;
             }
             free(rec_databuffp);

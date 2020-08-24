@@ -11,9 +11,15 @@ import time #for sleep
 #global settings
 oldConnectionsXmlPath="./digiLockPreviousConnections.xml"
 TCP_PORT = 4242
+ADCBUFFERSIZE = 2**14
 TCP_MAX_REC_CHUNK_SIZE = 4096
 ADCPRECISION = 10
 app=None
+
+class Opmode(Enum):
+    operation_mode_scan=40
+    operation_mode_characterise=41
+    operation_mode_lock=42
 
 class MessageType(Enum):
     getGraph=0
@@ -25,6 +31,13 @@ class MessageType(Enum):
     getOffset=6
     getOffset_return=7
     
+    setOpmode=8
+    setOpmode_return=9
+    getOpmode=10
+    getOpmode_return=11
+    
+    getCharPeaks=12
+    getCharPeaks_return=13
 
 
 def connect(Ip):
@@ -45,7 +58,7 @@ class InitialConnectionDialog(PyQt5.QtGui.QDialog):
         
         self.newConnectBtn = PyQt5.QtGui.QPushButton("New Connection", self)
         self.newConnectBtn.clicked.connect(self.on_newConnectBtn_click)
-
+        
         self.upperRow = PyQt5.QtGui.QHBoxLayout()
         self.upperRow.addWidget(self.label_ip)
         self.upperRow.addWidget(self.ledit_ip)
@@ -115,7 +128,32 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         super(MainWindow, self).__init__( *args, **kwargs)
         self.setWindowTitle("digitalLock Client")
         
+        self.UpperPlotWidget = PlotWidget()
+        self.UpperPlotWidget.setBackground('w')
+        self.UpperPlotWidget.setLabel('left', 'Ch1 [V]')
+        self.UpperPlotWidget.setLabel('bottom', 'n-th sample')
         
+        self.LowerPlotWidget = PlotWidget()
+        self.LowerPlotWidget.setBackground('w')
+        self.LowerPlotWidget.setLabel('left', 'Offset [V]')
+        self.LowerPlotWidget.setLabel('bottom', 'n-th peak')
+        
+        self.label_opmode = PyQt5.QtGui.QLabel("Mode of operation: ")
+        self.opmode_scan_button = PyQt5.QtGui.QPushButton("Scan", self)
+        self.opmode_characterize_button = PyQt5.QtGui.QPushButton("Characterize", self)
+        self.opmode_lock_button = PyQt5.QtGui.QPushButton("Lock", self)
+        self.opmode_scan_button.clicked.connect(self.on_opmode_scan_click)
+        self.opmode_characterize_button.clicked.connect(self.on_opmode_characterize_click)
+        self.opmode_lock_button.clicked.connect(self.on_opmode_lock_click)
+        
+        self.UpperButtonLayout=PyQt5.QtGui.QHBoxLayout()
+        self.UpperButtonLayout.addWidget(self.label_opmode)
+        self.UpperButtonLayout.addWidget(self.opmode_scan_button)
+        self.UpperButtonLayout.addWidget(self.opmode_characterize_button)
+        self.UpperButtonLayout.addWidget(self.opmode_lock_button)
+        
+        self.ledit_status = PyQt5.QtGui.QLineEdit()
+        self.ledit_status.setReadOnly(True)
         
         self.label_p = PyQt5.QtGui.QLabel("P: ")
         self.ledit_p = PyQt5.QtGui.QLineEdit()
@@ -140,31 +178,30 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.send_button = PyQt5.QtGui.QPushButton("Send Values", self)
         self.send_button.clicked.connect(self.on_newSendBtn_click)
         
-        self.ButtonLayout=PyQt5.QtGui.QHBoxLayout()
+        self.LowerButtonLayout=PyQt5.QtGui.QHBoxLayout()
+        self.LowerButtonLayout.addWidget(self.label_p)
+        self.LowerButtonLayout.addWidget(self.ledit_p)
+        self.LowerButtonLayout.addWidget(self.label_i)
+        self.LowerButtonLayout.addWidget(self.ledit_i)
+        self.LowerButtonLayout.addWidget(self.label_d)
+        self.LowerButtonLayout.addWidget(self.ledit_d)
+        self.LowerButtonLayout.addWidget(self.label_set)
+        self.LowerButtonLayout.addWidget(self.ledit_set)
+        self.LowerButtonLayout.addWidget(self.send_button)
         
-        self.ButtonLayout.addWidget(self.label_p)
-        self.ButtonLayout.addWidget(self.ledit_p)
-        self.ButtonLayout.addWidget(self.label_i)
-        self.ButtonLayout.addWidget(self.ledit_i)
-        self.ButtonLayout.addWidget(self.label_d)
-        self.ButtonLayout.addWidget(self.ledit_d)
-        self.ButtonLayout.addWidget(self.label_set)
-        self.ButtonLayout.addWidget(self.ledit_set)
-        self.ButtonLayout.addWidget(self.send_button)
-        
-        self.PlotWidget = PlotWidget()
         #init plot widget
-        self.x_range=range(8192)
-        y=[0]*8192
-        self.PlotWidget.setBackground('w')
-        self.PlotWidget.setLabel('left', 'Ch1 [V]')
-        self.PlotWidget.setLabel('bottom', 'n-th sample')
-        self.plot=self.PlotWidget.plot(self.x_range,y)
+        self.x_range=range(ADCBUFFERSIZE)
+        y=[0]*ADCBUFFERSIZE
+        
+        self.plot=self.UpperPlotWidget.plot(self.x_range,y)
         
         
         self.globalLayout=PyQt5.QtGui.QVBoxLayout()
-        self.globalLayout.addWidget(self.PlotWidget)
-        self.globalLayout.addLayout(self.ButtonLayout)
+        self.globalLayout.addWidget(self.UpperPlotWidget)
+        self.globalLayout.addWidget(self.LowerPlotWidget)
+        self.globalLayout.addLayout(self.UpperButtonLayout)
+        self.globalLayout.addWidget(self.ledit_status)
+        self.globalLayout.addLayout(self.LowerButtonLayout)
         
         self.globalWidget = PyQt5.QtGui.QWidget()
         self.globalWidget.setLayout(self.globalLayout)
@@ -195,7 +232,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.network_thread.getSettings_signal.emit()
         #timer to call getGraph repeadietely
         self.graphUpdateTimer=PyQt5.QtCore.QTimer(self)
-        self.graphUpdateTimer.setInterval(1000)
+        self.graphUpdateTimer.setInterval(100)
         self.graphUpdateTimer.timeout.connect(self.network_thread.getGraph_signal)
         
         #self.network_thread.getGraph_signal.emit()
@@ -210,6 +247,16 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             settings.append(float(ledit.text()))
         self.network_thread.setSettings_signal.emit(settings)
         
+    @PyQt5.QtCore.pyqtSlot()
+    def on_opmode_scan_click(self):
+        self.network_thread.set_opmode(Opmode.operation_mode_scan.value)
+    @PyQt5.QtCore.pyqtSlot()
+    def on_opmode_characterize_click(self):
+        self.network_thread.set_opmode(Opmode.operation_mode_characterise.value)
+    @PyQt5.QtCore.pyqtSlot()
+    def on_opmode_lock_click(self):
+        self.network_thread.set_opmode(Opmode.operation_mode_lock.value)
+    
     @PyQt5.QtCore.pyqtSlot(list)
     def getGraph_return(self,list):
         self.plot.setData(self.x_range, list)
@@ -263,6 +310,22 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
                 
         print("Networking thread initialized")
 
+
+    @PyQt5.QtCore.pyqtSlot()
+    def set_opmode(self,opmode):
+        self.networkTX_start_signal.emit()
+        type=MessageType.setOpmode.value
+        message = b''.join([struct.pack("!ii",type,4) , struct.pack("!i",opmode)])
+        self.socket.sendall(message)
+        #recieve answer
+        buffer = self.recvall(8)
+        header_tuple = struct.unpack("!ii",buffer)
+        requestType = header_tuple[0]
+        dataLength = header_tuple[1]
+        if(dataLength!=b"" or requestType==MessageType.setOpmode_return.value):
+            print("Error unexpected network packet after setOpmode")
+        self.networkTX_end_signal.emit()
+
     @PyQt5.QtCore.pyqtSlot()
     def getGraph(self):
         self.networkTX_start_signal.emit()
@@ -280,7 +343,7 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
         if(requestType!=MessageType.getGraph_return.value):
             print("Error unexpected network answer")
         data=struct.unpack("!"+str(dataLength//4)+"f",buffer)
-        print(data[:20])
+        #print(data[:20])
         graphy=list(data)
         self.networkTX_end_signal.emit()
         self.getGraph_return_signal.emit(graphy)

@@ -5,9 +5,10 @@
 #include <unistd.h>     //for sleep
 #include <time.h>       //for waiting for trigger timeout
 #include <float.h>      //for FLT_MIN
+#include <math.h>       //for fabsf
 #include "network_thread.h"
 #include "redpitaya/rp.h"
-#include "fft2g.h"
+#include "fft4g.h"
 
 //Buffer size is 2^14 samples
 //Sample rate is 125MSamples
@@ -46,6 +47,9 @@
 void SetGenerator(rp_channel_t ScanChannel, float ScanFrequency, float OtherChannelOffset);
 double getDeltatimeS(void);
 void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP);
+void sortPeaksY(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP);
+void fsortPeaksX(uint16_t numOfPeaks,float* peaksxP,float* peaksyP);
+
 void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t deadzoneSize,uint16_t* peaksx_returnp,float* peaksy_returnp);
 void waitTrgUnarmAndGetData(rp_acq_trig_src_t last_trgsrc, float* acqbufferP, uint32_t numOfSamples);
 
@@ -65,6 +69,53 @@ void doLock(int firstrun,float* acqbufferP){
     CHK_ERR(rp_AcqStart());
     CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
 
+}
+
+uint16_t get_num_valid_peaks(uint16_t numpeaks,float* peaksyP,float PeakDiscardTreshold,float average){
+    uint16_t numOfValidPeaks=1; //the first peak is always in this selection
+    for(uint16_t peak_idx=1;peak_idx<numpeaks;peak_idx++){    //ceck all other points except largest one if they are large enough
+        if((peaksyP[0]-average)*PeakDiscardTreshold<(peaksyP[peak_idx]-average)){
+            numOfValidPeaks++;
+        }
+    }
+    return numOfValidPeaks;
+}
+
+int16_t get_least_peak_dist(uint16_t numpeaks1,uint16_t* peakx1P,uint16_t numpeaks2,uint16_t* peakx2P){
+    int16_t smallestDeltaX=INT16_MAX;
+    for(uint16_t peak_first_idx=0;peak_first_idx<numpeaks1;peak_first_idx++){
+        for(uint16_t peak_second_idx=0;peak_second_idx<numpeaks2;peak_second_idx++){
+            int16_t peakDeltaX=(int16_t)(((int16_t)peakx1P[peak_first_idx])-((int16_t)peakx2P[peak_second_idx]));
+            if(abs(peakDeltaX)<abs(smallestDeltaX)){
+                smallestDeltaX=peakDeltaX;
+            }
+        }
+    }
+    return smallestDeltaX;
+}
+
+float get_average(int numsamples,float* samplesY){
+    float average=0.0f;
+    for(int sample=0;sample<numsamples;sample++){
+        average+=samplesY[sample]/(float)numsamples;
+    }
+    return average;
+}
+
+float get_median_peakdist(uint16_t numpeaks,uint16_t* peakxP){
+    float median_peakdist=0.0f;
+    for(uint16_t peak_idx=1;peak_idx<numpeaks;peak_idx++){
+        median_peakdist+=fabsf((float)peakxP[peak_idx]-(float)peakxP[peak_idx-1])/(float)(numpeaks-1);
+        printf("Peakdist %f\n",median_peakdist);
+    }
+    return median_peakdist;
+}
+
+int16_t sgn(int16_t x){
+    if(x<0){
+        return -1;
+    }
+    return 1;
 }
 
 void doScan(int firstrun,float* acqbufferP){
@@ -89,28 +140,43 @@ void doScan(int firstrun,float* acqbufferP){
 #define MaxNumOfPeaks_Scan_Grat 10
 #define DeadzoneSamplepoints_Scan_Cav 100
 #define DeadzoneSamplepoints_Scan_Grat 100
-#define PeakDiscardFactor 0.6
-#define NumScanSteps 1000
+#define PeakDiscardFactor 0.65f
+#define NumScanSteps 50
+#define NewPeakTresholdFactor 0.2f         //check if new peak has entered from the left, this is the treshold ratio between dist_peaks_old_vs_new/distpeaks
 enum {
     char_step_scan_cav,                 //initial scan of the cavity to determine cav_voltage_per_peakdist
     char_step_scan_grat,                //initial scan of the laser to determine grat_voltage_per_peakdist
     char_step_scan_direction,           //scan moving the grating 1/4 * grat_voltage_per_peakdist to check movement direction
-    char_step_scan_cav_check_range,
-    char_step_scan_cav_mv_grat,
+    char_step_scan_finetune,            //rescan cavity to check if applying grat_voltage_per_peakdist as offset returns the same image as the initial scan (if not correct offset)
+    char_step_scan_cav_mv_grat,         //scan cavity 1000 times while slowly varying the grating voltage from -grat_voltage_per_peakdist/2 to grat_voltage_per_peakdist/2
     char_step_finished
 };
-void doCharacterise(int firstrun,float* acqbufferP){
+
+void printPeaks(int numpeaks,uint16_t* peaksx,float* peaksy){
+    printf("npeaks found: %d\n",numpeaks);
+    for(int peak=0;peak<numpeaks;peak++){
+        printf("Peak at x=\t%d\t, y=\t%f\t\n",peaksx[peak],peaksy[peak]);
+    }
+}
+
+int32_t doCharacterise(int firstrun,float* acqbufferP){
     static int CharacterisationStep=char_step_scan_cav;
+    //TODO the three entries below could be localized inside their specific case section
     static uint16_t* peaksx_scan_cav_P;
     static float* peaksy_scan_cav_P;
     static uint16_t valid_peaks_scan_cav;
+    
     static float cav_voltage_per_peakdist;
     static float grat_voltage_per_peakdist;
-
-    static float* peaksy_charactP;
-
+    static float average;
+    //output of the function
+    static float* characterisationDataXP;
+    static float* characterisationDataYP;
+    static int32_t valid_peaks_charact;
+    
+    static int scandir;
     if(firstrun){
-        SetGenerator(RP_CH_1,SLOW_FREQ,0.0);
+        SetGenerator(RP_CH_1,SLOW_FREQ,-1.0f);
         CHK_ERR(rp_AcqSetDecimation(SLOW_DEC));
         CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));
         CHK_ERR(rp_AcqStart());  //this commands initiates the pitaya to start aquiring samples
@@ -122,112 +188,167 @@ void doCharacterise(int firstrun,float* acqbufferP){
     CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
     switch(CharacterisationStep){
         case char_step_scan_cav:
-            cav_voltage_per_peakdist=0.0f;
-            valid_peaks_scan_cav=0;
-            //Setup generator for char_step_scan_grat
-            SetGenerator(RP_CH_2,SLOW_FREQ,-1.0f);
-
             peaksx_scan_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
             peaksy_scan_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            average=get_average(ADCBUFFERSIZE,acqbufferP);
+            printf("Average is %f\n",average);
             findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
-            sortPeaksX(MaxNumOfPeaks_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
-            printf("Cavity scan peak at (%d,%f)\n",peaksx_scan_cav_P[0],peaksy_scan_cav_P[0]);
-            for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Cav;peak_idx++){    //ceck all other points except largest one if they are large enough
-                if(peaksy_scan_cav_P[0]*PeakDiscardFactor<peaksy_scan_cav_P[peak_idx]){
-                    valid_peaks_scan_cav++;
-                    printf("Cavity scan peak at (%d,%f)\n",peaksx_scan_cav_P[peak_idx],peaksy_scan_cav_P[peak_idx]);
-                }
-            }
+            printPeaks(MaxNumOfPeaks_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            valid_peaks_scan_cav=get_num_valid_peaks(MaxNumOfPeaks_Scan_Cav,peaksy_scan_cav_P,PeakDiscardFactor,average);
+            sortPeaksX(valid_peaks_scan_cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            printPeaks(valid_peaks_scan_cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
             if(valid_peaks_scan_cav==1){
-                priontf("Error, not enough peaks found during the first scan of the cavity, repeat scan.\n");
-                return;
+                printf("Error, not enough peaks found during the first scan of the cavity, repeat scan.\n");
+                return 0;
             }
-            for(uint16_t peak_idx=1;peak_idx<valid_peaks_scan_cav;peak_idx++){
-                //first factor is scan range of 2Vpp, the other part is delta_samples_between_peaks/total_num_samples_per_rising edge
-                cav_voltage_per_peakdist+=2.0f*((float)(peaksx_scan_cav_P[peak_idx]-peaksx_scan_cav_P[peak_idx-1]))/ADCBUFFERSIZE;
-            }
-            cav_voltage_per_peakdist/=valid_peaks_scan_cav;
-            //TODO set cav_voltage_per_peakdist
+            cav_voltage_per_peakdist=(2.0f/ADCBUFFERSIZE)*get_median_peakdist(valid_peaks_scan_cav,peaksx_scan_cav_P);
+            printf("cav_voltage_per_peakdist %f\n",cav_voltage_per_peakdist);
             CharacterisationStep=char_step_scan_grat;
-
-            break;
+            SetGenerator(RP_CH_2,SLOW_FREQ,0.0f);
+            printf("After error?\n");
+        break;
         case char_step_scan_grat: ;//need this here
-            uint16_t valid_peaks_scan_grat=0;
             uint16_t* peaksx_scan_grat_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Grat*sizeof(uint16_t));
             float*    peaksy_scan_grat_P=(float*)malloc(MaxNumOfPeaks_Scan_Grat*sizeof(float));
             findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Grat,DeadzoneSamplepoints_Scan_Grat,peaksx_scan_grat_P,peaksy_scan_grat_P);
-            sortPeaksX(MaxNumOfPeaks_Scan_Grat,peaksx_scan_grat_P,peaksy_scan_grat_P);
-            printf("Grating scan peak at (%d,%f)\n",peaksx_scan_grat_P[0],peaksy_scan_grat_P[0]);
-            for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Grat;peak_idx++){    //ceck all other points except largest one if they are large enough
-                if(peaksy_scan_grat_P[0]*PeakDiscardFactor<peaksy_scan_grat_P[peak_idx]){
-                    valid_peaks_scan_grat++;
-                    printf("Grating scan peak at (%d,%f)\n",peaksx_scan_grat_P[peak_idx],peaksy_scan_grat_P[peak_idx]);
-                }
-            }
+            uint16_t valid_peaks_scan_grat=get_num_valid_peaks(MaxNumOfPeaks_Scan_Grat,peaksy_scan_grat_P,PeakDiscardFactor,average);
+            sortPeaksX(valid_peaks_scan_grat,peaksx_scan_grat_P,peaksy_scan_grat_P);
+            printPeaks(valid_peaks_scan_grat,peaksx_scan_grat_P,peaksy_scan_grat_P);
             if(valid_peaks_scan_grat==1){
                 printf("Error, not enough peaks found while scanning grating, repeat scan.\n");
-                return;
+                return 0;
             }
-            grat_voltage_per_peakdist=0;
-            for(uint16_t peak_idx=1;peak_idx<valid_peaks_scan_grat;peak_idx++){
-                //first factor is scan range of 2Vpp, the other part is delta_samples_between_peaks/total_num_samples_per_rising edge
-                grat_voltage_per_peakdist+=2.0f*((float)(peaksx_scan_grat_P[peak_idx]-peaksx_scan_grat_P[peak_idx-1]))/ADCBUFFERSIZE;
-            }
-            grat_voltage_per_peakdist/=valid_peaks_scan_grat;
+            //TODO why is this negative?????
+            grat_voltage_per_peakdist=(2.0f/ADCBUFFERSIZE)*get_median_peakdist(valid_peaks_scan_grat,peaksx_scan_grat_P);
+            printf("grat_voltage_per_peakdist %f\n",grat_voltage_per_peakdist);
             free(peaksx_scan_grat_P);
             free(peaksy_scan_grat_P);
-            //Setup generator for char_step_scan_cav_check_range
-            CharacterisationStep=char_step_scan_cav_check_range;
+            CharacterisationStep=char_step_scan_direction;
+            SetGenerator(RP_CH_1,SLOW_FREQ,-1.0f+grat_voltage_per_peakdist*0.25f);
+        break;
+        case char_step_scan_direction: ;
+            uint16_t* peaksx_scan_dir_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
+            float* peaksy_scan_dir_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_dir_cav_P,peaksy_scan_dir_cav_P);
+            uint16_t valid_peaks_dir_scan_cav=get_num_valid_peaks(MaxNumOfPeaks_Scan_Cav,peaksy_scan_dir_cav_P,PeakDiscardFactor,average);
+            sortPeaksX(valid_peaks_dir_scan_cav,peaksx_scan_dir_cav_P,peaksy_scan_dir_cav_P);
+            int16_t leastSampleDist=get_least_peak_dist(valid_peaks_dir_scan_cav,peaksx_scan_dir_cav_P,valid_peaks_scan_cav,peaksx_scan_cav_P); //do not change order or arguments!
+            if( (fabsf(leastSampleDist/(cav_voltage_per_peakdist*ADCBUFFERSIZE/2.0f))<0.2f) || (0.3f<fabsf(leastSampleDist/(cav_voltage_per_peakdist*ADCBUFFERSIZE/2.0f)))){
+                printf("Error while finding scan direction, expected sample dist to be between +/- 0.2 and +/- 0.3, but got %f, retry.\n",leastSampleDist/(cav_voltage_per_peakdist*ADCBUFFERSIZE/2.0f));
+                return 0;
+            }
+            scandir=sgn(leastSampleDist);
+            printf("Scan direction is %d\n",scandir);
+            free(peaksx_scan_dir_cav_P);
+            free(peaksy_scan_dir_cav_P);
+            CharacterisationStep=char_step_scan_finetune;
             SetGenerator(RP_CH_1,SLOW_FREQ,-1.0f+grat_voltage_per_peakdist);
             break;
-        case char_step_scan_cav_check_range:
-            uint16_t valid_peaks_second_scan_cav=0;
-            uint16_t* peaksx_second_scan_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
-            float*    peaksy_second_scan_scan_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
-            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_second_scan_cav_P,peaksy_second_scan_scan_P);
-            sortPeaksX(MaxNumOfPeaks_Scan_Cav,peaksx_second_scan_cav_P,peaksy_second_scan_scan_P);
-            printf("Cavity scan peak at (%d,%f)\n",peaksx_second_scan_cav_P[0],peaksy_second_scan_scan_P[0]);
-            for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Cav;peak_idx++){    //ceck all other points except largest one if they are large enough
-                if(peaksy_second_scan_scan_P[0]*PeakDiscardFactor<peaksy_second_scan_scan_P[peak_idx]){
-                    valid_peaks_second_scan_cav++;
-                    printf("Cavity scan peak at (%d,%f)\n",peaksx_second_scan_cav_P[peak_idx],peaksy_second_scan_scan_P[peak_idx]);
-                }
-            }
-            if(valid_peaks_second_scan_cav==1){
+        case char_step_scan_finetune:;{
+            uint16_t* peaksx_scan_fine_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
+            float*    peaksy_scan_fine_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_fine_cav_P,peaksy_scan_fine_cav_P);
+            uint16_t valid_peaks_scan_fine_cav=get_num_valid_peaks(MaxNumOfPeaks_Scan_Cav,peaksy_scan_fine_cav_P,PeakDiscardFactor,average);
+            sortPeaksX(valid_peaks_scan_fine_cav,peaksx_scan_fine_cav_P,peaksy_scan_fine_cav_P);
+            if(valid_peaks_scan_fine_cav==1){
                 printf("Error, not enough peaks found while scanning cavity for the second time, repeat scan.\n");
-                return;
+                return 0;
             }
-            //Find closest distance between peaks
-            int16_t smallestDeltaX=UINT16_MAX;
-            for(uint16_t peak_first_idx=0;peak_first_idx<valid_peaks_scan_cav;peak_first_idx++){
-                for(uint16_t peak_second_idx=0;peak_second_idx<valid_peaks_second_scan_cav;peak_second_idx++){
-                    int16_t peakDeltaX=((int16_t)peaksx_scan_cav_P[peak_first_idx])-((int16_t)peaksx_second_scan_cav_P[peak_second_idx]);
-                    if(abs(peakDeltaX)<abs(smallestDeltaX)){
-                        smallestDeltaX=peakDeltaX;
-                    }
-                }
-            }
-            printf("Smallest samplenum between peak of first and second scan of cavity was %d\n",smallestDeltaX);
-            //correct cav_voltage_per_peakdist
-            //TODO DOES THIS THEORETICALLY WORK?
-            grat_voltage_per_peakdist+=((float)smallestDeltaX)/ADCBUFFERSIZE
-
-            free(peaksx_second_scan_cav_P);
-            free(peaksy_second_scan_scan_P);
+            int16_t leastSampleDist=get_least_peak_dist(valid_peaks_scan_fine_cav,peaksx_scan_fine_cav_P,valid_peaks_scan_cav,peaksx_scan_cav_P); //do not change order or arguments!
+            printf("Smallest samplenum between peak of first and second scan of cavity was %d\n",leastSampleDist);
+            //correct grat_voltage_per_peakdist
+            printf("old grat_voltage_per_peakdist=%f\n",grat_voltage_per_peakdist);
+            grat_voltage_per_peakdist*=(cav_voltage_per_peakdist/(cav_voltage_per_peakdist+(leastSampleDist*(float)scandir*2.0f/ADCBUFFERSIZE)));
+            printf("corrected grat_voltage_per_peakdist=%f\n",grat_voltage_per_peakdist);
+            free(peaksx_scan_fine_cav_P);
+            free(peaksy_scan_fine_cav_P);
             //Setup generator for char_step_scan_cav_check_range
             CharacterisationStep=char_step_scan_cav_mv_grat;
-            SetGenerator(RP_CH_1,SLOW_FREQ,-grat_voltage_per_peakdist/2);
-            break;
-        case char_step_scan_cav_mv_grat:
+            SetGenerator(RP_CH_1,SLOW_FREQ,(grat_voltage_per_peakdist*-0.5f*(float)scandir));
+        }
+        break;
+        case char_step_scan_cav_mv_grat:;{
+            static uint16_t scannum=0;
+            static uint16_t valid_peaks_old_scan;
+            static int idx_offset=0;
 
-            //TODO IF ALL SCANS ARE DONE CharacterisationStep=char_step_finished;
-            break;
+            static uint16_t* peaksx_scan_old_cav_P=0;
+            static float*    peaksy_scan_old_cav_P=0;
+            if(scannum==0){
+                peaksx_scan_old_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
+                peaksy_scan_old_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
+                findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_old_cav_P,peaksy_scan_old_cav_P);
+                valid_peaks_old_scan=get_num_valid_peaks(MaxNumOfPeaks_Scan_Cav,peaksy_scan_old_cav_P,PeakDiscardFactor,average);
+                sortPeaksX(valid_peaks_old_scan,peaksx_scan_old_cav_P,peaksy_scan_old_cav_P);
+                characterisationDataXP=(float*)malloc(NumScanSteps*MaxNumOfPeaks_Scan_Cav*sizeof(float));
+                characterisationDataYP=(float*)malloc(NumScanSteps*MaxNumOfPeaks_Scan_Cav*sizeof(float));
+                for(uint32_t peaknum=0;peaknum<valid_peaks_old_scan;peaknum++){
+                    characterisationDataXP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=scannum/(float)NumScanSteps+(float)peaknum+(float)idx_offset;
+                    characterisationDataYP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=peaksx_scan_old_cav_P[peaknum];
+                }
+                scannum++;
+                return 0;
+            }
+            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            valid_peaks_scan_cav=get_num_valid_peaks(MaxNumOfPeaks_Scan_Cav,peaksy_scan_cav_P,PeakDiscardFactor,average);
+            sortPeaksX(valid_peaks_scan_cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            //check if a new peak has entered from the left
+            int16_t sampledistFirstPeaks=(int16_t)((int16_t)peaksx_scan_cav_P[0]-(int16_t)peaksx_scan_old_cav_P[0]);
+            printf("sampledist %d\n",sampledistFirstPeaks);
+            float peakdelta_pre_peakdist=sampledistFirstPeaks/(cav_voltage_per_peakdist*(ADCBUFFERSIZE/2.0f));
+            printf("peakdelta_pre_peakdist %f\n",peakdelta_pre_peakdist);
+
+            if(fabsf(peakdelta_pre_peakdist)<NewPeakTresholdFactor){
+                printf("First peak of current and last scan had a ratio to scan_dist of %f\n",peakdelta_pre_peakdist);
+            }else if( (1.0f-NewPeakTresholdFactor)<fabsf(peakdelta_pre_peakdist) && (fabsf(peakdelta_pre_peakdist)<(1.0f+NewPeakTresholdFactor))){
+                printf("leftmost peak appeared or disappeared, delta is %f\n",peakdelta_pre_peakdist);
+                idx_offset+=sgn(sampledistFirstPeaks);
+            }else{
+                printf("strange peak missmatch, discarding data and retry\n");
+                return 0;
+            }
+            for(uint32_t peaknum=0;peaknum<MaxNumOfPeaks_Scan_Cav;peaknum++){
+                if(valid_peaks_scan_cav<peaknum){
+                    characterisationDataXP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=scannum/(float)NumScanSteps+(float)peaknum+(float)idx_offset;
+                    characterisationDataYP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=peaksx_scan_cav_P[peaknum];
+                }else{
+                    characterisationDataXP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=FLT_MAX;
+                    characterisationDataYP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=FLT_MAX;
+                }
+            }
+            uint16_t* tempx=peaksx_scan_old_cav_P;
+            float* tempy=peaksy_scan_old_cav_P;
+            peaksx_scan_old_cav_P=peaksx_scan_cav_P;
+            peaksy_scan_old_cav_P=peaksy_scan_cav_P;
+            peaksx_scan_cav_P=tempx;
+            peaksy_scan_cav_P=tempy;
+            scannum++;
+            if(scannum<NumScanSteps){
+                CHK_ERR(rp_GenOffset(RP_CH_2, grat_voltage_per_peakdist*((-0.5f+(scannum/(float)NumScanSteps))*(float)scandir)));
+            }else{
+                free(peaksx_scan_old_cav_P);
+                free(peaksy_scan_old_cav_P);
+                free(peaksx_scan_cav_P);
+                free(peaksy_scan_cav_P);
+                CharacterisationStep=char_step_finished;
+                fsortPeaksX(NumScanSteps*MaxNumOfPeaks_Scan_Cav,characterisationDataXP,characterisationDataYP);
+                valid_peaks_charact=0;
+                for(;valid_peaks_charact<NumScanSteps*MaxNumOfPeaks_Scan_Cav;valid_peaks_charact++){
+                    if(characterisationDataXP[valid_peaks_charact]==FLT_MAX){
+                        break;
+                    }
+                }
+                printf("got %d valid points\n",valid_peaks_charact);                   
+            }
+        }break;
         case char_step_finished:
-            free(peaksx_scan_cav_P);
-            free(peaksy_scan_cav_P);
-            break;
+            return valid_peaks_charact;
+        break;
     }
+    return 0;
 }
+
+
 
 void packRealIntoFFTcomplex(float* ReInP, float* ReCoOutP){
     for(int i=0;i<ADCBUFFERSIZE;i++){
@@ -246,20 +367,20 @@ void doCorrelation(float* fft_in_outP, float* corr_luP,int* ooura_fft_ipP, float
         fft_in_outP[2*i]-=median;
     }
     //Do fft
-    cdft(ADCBUFFERSIZE*2,1,in_and_outP,ooura_fft_ipP,ooura_fft_wP);
+    cdft(ADCBUFFERSIZE*2,1,fft_in_outP,ooura_fft_ipP,ooura_fft_wP);
     //multiply for correlation
     for(int i=0;i<ADCBUFFERSIZE;i++){
-        float temp=fft_in_outP[2*i]*ooura_fft_ipP[2*i]-fft_in_outP[2*i+1]*ooura_fft_ipP[2*i+1];
-        fft_in_outP[2*i+1]=fft_in_outP[2*i]*ooura_fft_ipP[2*i+1]+fft_in_outP[2*i+1]*ooura_fft_ipP[2*i];
+        float temp=fft_in_outP[2*i]*corr_luP[2*i]-fft_in_outP[2*i+1]*corr_luP[2*i+1];
+        fft_in_outP[2*i+1]=fft_in_outP[2*i]*corr_luP[2*i+1]+fft_in_outP[2*i+1]*corr_luP[2*i];
         fft_in_outP[2*i]=temp;
     }
     //Do ifft
-    cdft(ADCBUFFERSIZE*2,-1,in_and_outP,ooura_fft_ipP,ooura_fft_wP);
+    cdft(ADCBUFFERSIZE*2,-1,fft_in_outP,ooura_fft_ipP,ooura_fft_wP);
     return;
 }
 
 int main(int argc, char **argv){
-
+    
     CHK_ERR(rp_Init());
 
     //create mutex
@@ -279,7 +400,9 @@ int main(int argc, char **argv){
     //create data structures which are protected by mutexes
     float* network_acqbufferP=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
     uint32_t new_operation_mode=operation_mode_scan;
-
+    float* characterisationXP;  //needs to be free-ed by network thread
+    float* characterisationYP;  //needs to be free-ed by network thread
+    uint32_t numCharacterisationPoints=0;
 
     //initialize interprocess communication sturct
     struct threadinfo threadinf;
@@ -303,8 +426,9 @@ int main(int argc, char **argv){
     int* ooura_fft_ipP=(int*) malloc(sqrt(ADCBUFFERSIZE)*sizeof(int));
     float* ooura_fft_wP=(float*) malloc(ADCBUFFERSIZE/2*sizeof(float));
     //lookup storage for correlation
-    float* fft_in_outP=(float*) malloc(2*ADCBUFFERSIZE*sizeof(float));
-    float* corr_luP=(float*) malloc(2*ADCBUFFERSIZE*sizeof(float));
+    //TODO uncomment
+    //float* fft_in_outP=(float*) malloc(2*ADCBUFFERSIZE*sizeof(float));
+    //float* corr_luP=(float*) malloc(2*ADCBUFFERSIZE*sizeof(float));
     //initialize fft lookup tables
     makewt(ADCBUFFERSIZE>>2,ooura_fft_ipP,ooura_fft_wP);
 
@@ -344,7 +468,8 @@ int main(int argc, char **argv){
                     doScan(0,acqbufferP);
                 break;
                 case operation_mode_characterise:
-                    doCharacterise(0,acqbufferP);
+                    
+                    numCharacterisationPoints=doCharacterise(0,acqbufferP);
                 break;
                 case operation_mode_lock:
                     printf("Not ready\n");
@@ -391,6 +516,7 @@ void SetGenerator(rp_channel_t ScanChannel, float ScanFrequency, float OtherChan
     CHK_ERR(rp_GenArbWaveform(ScanChannel, wavetable, ADCBUFFERSIZE));
     free(wavetable);
     CHK_ERR(rp_GenFreq(ScanChannel,ScanFrequency));
+    CHK_ERR(rp_GenOffset(ScanChannel, 0.0f));
     CHK_ERR(rp_GenAmp(ScanChannel,1.0));
     CHK_ERR(rp_GenOutEnable(ScanChannel));
 
@@ -403,7 +529,7 @@ void SetGenerator(rp_channel_t ScanChannel, float ScanFrequency, float OtherChan
 
     CHK_ERR(rp_GenAmp(otherChannel, 0.0));
     CHK_ERR(rp_GenWaveform(otherChannel, RP_WAVEFORM_DC));
-    CHK_ERR(rp_GenOffset(RP_CH_2, OtherChannelOffset));
+    CHK_ERR(rp_GenOffset(otherChannel, OtherChannelOffset));
     CHK_ERR(rp_GenOutEnable(otherChannel));
 }
 
@@ -439,6 +565,28 @@ double getDeltatimeS(void){
     return deltatime;
 }
 
+void fsortPeaksX(uint16_t numOfPeaks,float* peaksxP,float* peaksyP){
+    int swapped_flag;
+    uint16_t numOfSwaps=numOfPeaks;
+    do{
+        swapped_flag=0;
+        for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
+            if(peaksxP[bubble_offset+1]<peaksxP[bubble_offset]){
+                swapped_flag=1;
+                //swap peaksx
+                float tempx=peaksxP[bubble_offset];
+                peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
+                peaksxP[bubble_offset+1]=tempx;
+                //swap peaksy
+                float tempy=peaksyP[bubble_offset];
+                peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
+                peaksyP[bubble_offset+1]=tempy;
+            }
+        }
+        numOfSwaps--;
+    }while(swapped_flag);
+}
+
 void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
     int swapped_flag;
     uint16_t numOfSwaps=numOfPeaks;
@@ -446,6 +594,29 @@ void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
         swapped_flag=0;
         for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
             if(peaksxP[bubble_offset+1]<peaksxP[bubble_offset]){
+                swapped_flag=1;
+                //swap peaksx
+                uint16_t tempx=peaksxP[bubble_offset];
+                peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
+                peaksxP[bubble_offset+1]=tempx;
+                //swap peaksy
+                float tempy=peaksyP[bubble_offset];
+                peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
+                peaksyP[bubble_offset+1]=tempy;
+            }   
+        }
+        numOfSwaps--;
+    }while(swapped_flag);
+}
+
+void sortPeaksY(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
+    int swapped_flag;
+    uint16_t numOfSwaps=numOfPeaks;
+    do{
+        swapped_flag=0;
+        for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
+            if(peaksyP[bubble_offset+1]<peaksyP[bubble_offset]){
+                swapped_flag=1;
                 //swap peaksx
                 uint16_t tempx=peaksxP[bubble_offset];
                 peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
@@ -455,15 +626,16 @@ void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
                 peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
                 peaksyP[bubble_offset+1]=tempy;
             }
-            numOfSwaps--;
         }
+        numOfSwaps--;
     }while(swapped_flag);
 }
 
 void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t deadzoneSize,uint16_t* peaksx_returnp,float* peaksy_returnp){
     for(uint16_t peakNum=0;peakNum<numOfPeaks;peakNum++){
         uint16_t bestx=0;
-        float    besty=FLT_MIN;
+        float    besty;
+        besty=-FLT_MAX;
         for(uint16_t sampleNum=0;sampleNum<numOfPoints;sampleNum++){
             //check for deadzone
             int deadzoneHit=0;

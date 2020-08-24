@@ -9,11 +9,14 @@ OBJS=$(SRCS:.c=)
 
 all: server
 
-server: main.o network_thread.o
-	$(CC) $(LDFLAGS) main.o network_thread.o $(LDLIBS) -o server
+server: main.o network_thread.o fft4g.o
+	$(CC) $(LDFLAGS) main.o network_thread.o fft4g.o $(LDLIBS) -o server
 
 network_thread.o: network_thread.c
 	$(CC) -c $(CFLAGS) network_thread.c -o network_thread.o
+
+fft4g.o: fft4g.c
+	$(CC) -c $(INC) fft4g.c -o fft4g.o
 
 main.o: main.c
 	$(CC) -c $(CFLAGS) main.c -o main.o
