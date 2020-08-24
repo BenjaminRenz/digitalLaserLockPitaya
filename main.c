@@ -91,14 +91,24 @@ void doScan(int firstrun,float* acqbufferP){
 #define DeadzoneSamplepoints_Scan_Grat 100
 #define PeakDiscardFactor 0.6
 #define NumScanSteps 1000
-enum {char_step_scan_cav,char_step_scan_grat,char_step_scan_cav_check_range,char_step_scan_cav_mv_grat,char_step_finished};
+enum {
+    char_step_scan_cav,                 //initial scan of the cavity to determine cav_voltage_per_peakdist
+    char_step_scan_grat,                //initial scan of the laser to determine grat_voltage_per_peakdist
+    char_step_scan_direction,           //scan moving the grating 1/4 * grat_voltage_per_peakdist to check movement direction
+    char_step_scan_cav_check_range,
+    char_step_scan_cav_mv_grat,
+    char_step_finished
+};
 void doCharacterise(int firstrun,float* acqbufferP){
     static int CharacterisationStep=char_step_scan_cav;
     static uint16_t* peaksx_scan_cav_P;
     static float* peaksy_scan_cav_P;
-    static uint16_t valid_peaks_scan_cav=0;
-    static float cav_voltage_per_peakdist=0.0f;
-    static float grat_voltage_per_peakdist=0.0f;
+    static uint16_t valid_peaks_scan_cav;
+    static float cav_voltage_per_peakdist;
+    static float grat_voltage_per_peakdist;
+
+    static float* peaksy_charactP;
+
     if(firstrun){
         SetGenerator(RP_CH_1,SLOW_FREQ,0.0);
         CHK_ERR(rp_AcqSetDecimation(SLOW_DEC));
@@ -112,6 +122,8 @@ void doCharacterise(int firstrun,float* acqbufferP){
     CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
     switch(CharacterisationStep){
         case char_step_scan_cav:
+            cav_voltage_per_peakdist=0.0f;
+            valid_peaks_scan_cav=0;
             //Setup generator for char_step_scan_grat
             SetGenerator(RP_CH_2,SLOW_FREQ,-1.0f);
 
@@ -119,11 +131,16 @@ void doCharacterise(int firstrun,float* acqbufferP){
             peaksy_scan_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
             findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
             sortPeaksX(MaxNumOfPeaks_Scan_Cav,peaksx_scan_cav_P,peaksy_scan_cav_P);
+            printf("Cavity scan peak at (%d,%f)\n",peaksx_scan_cav_P[0],peaksy_scan_cav_P[0]);
             for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Cav;peak_idx++){    //ceck all other points except largest one if they are large enough
                 if(peaksy_scan_cav_P[0]*PeakDiscardFactor<peaksy_scan_cav_P[peak_idx]){
                     valid_peaks_scan_cav++;
                     printf("Cavity scan peak at (%d,%f)\n",peaksx_scan_cav_P[peak_idx],peaksy_scan_cav_P[peak_idx]);
                 }
+            }
+            if(valid_peaks_scan_cav==1){
+                priontf("Error, not enough peaks found during the first scan of the cavity, repeat scan.\n");
+                return;
             }
             for(uint16_t peak_idx=1;peak_idx<valid_peaks_scan_cav;peak_idx++){
                 //first factor is scan range of 2Vpp, the other part is delta_samples_between_peaks/total_num_samples_per_rising edge
@@ -147,6 +164,11 @@ void doCharacterise(int firstrun,float* acqbufferP){
                     printf("Grating scan peak at (%d,%f)\n",peaksx_scan_grat_P[peak_idx],peaksy_scan_grat_P[peak_idx]);
                 }
             }
+            if(valid_peaks_scan_grat==1){
+                printf("Error, not enough peaks found while scanning grating, repeat scan.\n");
+                return;
+            }
+            grat_voltage_per_peakdist=0;
             for(uint16_t peak_idx=1;peak_idx<valid_peaks_scan_grat;peak_idx++){
                 //first factor is scan range of 2Vpp, the other part is delta_samples_between_peaks/total_num_samples_per_rising edge
                 grat_voltage_per_peakdist+=2.0f*((float)(peaksx_scan_grat_P[peak_idx]-peaksx_scan_grat_P[peak_idx-1]))/ADCBUFFERSIZE;
@@ -159,11 +181,42 @@ void doCharacterise(int firstrun,float* acqbufferP){
             SetGenerator(RP_CH_1,SLOW_FREQ,-1.0f+grat_voltage_per_peakdist);
             break;
         case char_step_scan_cav_check_range:
+            uint16_t valid_peaks_second_scan_cav=0;
+            uint16_t* peaksx_second_scan_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
+            float*    peaksy_second_scan_scan_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            findPeaks(ADCBUFFERSIZE,acqbufferP,MaxNumOfPeaks_Scan_Cav,DeadzoneSamplepoints_Scan_Cav,peaksx_second_scan_cav_P,peaksy_second_scan_scan_P);
+            sortPeaksX(MaxNumOfPeaks_Scan_Cav,peaksx_second_scan_cav_P,peaksy_second_scan_scan_P);
+            printf("Cavity scan peak at (%d,%f)\n",peaksx_second_scan_cav_P[0],peaksy_second_scan_scan_P[0]);
+            for(uint16_t peak_idx=1;peak_idx<MaxNumOfPeaks_Scan_Cav;peak_idx++){    //ceck all other points except largest one if they are large enough
+                if(peaksy_second_scan_scan_P[0]*PeakDiscardFactor<peaksy_second_scan_scan_P[peak_idx]){
+                    valid_peaks_second_scan_cav++;
+                    printf("Cavity scan peak at (%d,%f)\n",peaksx_second_scan_cav_P[peak_idx],peaksy_second_scan_scan_P[peak_idx]);
+                }
+            }
+            if(valid_peaks_second_scan_cav==1){
+                printf("Error, not enough peaks found while scanning cavity for the second time, repeat scan.\n");
+                return;
+            }
+            //Find closest distance between peaks
+            int16_t smallestDeltaX=UINT16_MAX;
+            for(uint16_t peak_first_idx=0;peak_first_idx<valid_peaks_scan_cav;peak_first_idx++){
+                for(uint16_t peak_second_idx=0;peak_second_idx<valid_peaks_second_scan_cav;peak_second_idx++){
+                    int16_t peakDeltaX=((int16_t)peaksx_scan_cav_P[peak_first_idx])-((int16_t)peaksx_second_scan_cav_P[peak_second_idx]);
+                    if(abs(peakDeltaX)<abs(smallestDeltaX)){
+                        smallestDeltaX=peakDeltaX;
+                    }
+                }
+            }
+            printf("Smallest samplenum between peak of first and second scan of cavity was %d\n",smallestDeltaX);
+            //correct cav_voltage_per_peakdist
+            //TODO DOES THIS THEORETICALLY WORK?
+            grat_voltage_per_peakdist+=((float)smallestDeltaX)/ADCBUFFERSIZE
 
-
-            //Setup generator for char_step_scan_cav_mv_grat
+            free(peaksx_second_scan_cav_P);
+            free(peaksy_second_scan_scan_P);
+            //Setup generator for char_step_scan_cav_check_range
             CharacterisationStep=char_step_scan_cav_mv_grat;
-            SetGenerator(RP_CH_1,SLOW_FREQ,grat_voltage_per_peakdist);
+            SetGenerator(RP_CH_1,SLOW_FREQ,-grat_voltage_per_peakdist/2);
             break;
         case char_step_scan_cav_mv_grat:
 
