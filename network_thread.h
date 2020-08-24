@@ -11,7 +11,16 @@ struct threadinfo{
     float* settingsP;
     mtx_t* mutex_new_operation_modeP;
     uint32_t* new_operation_modeP;
-    uint16_t offsetsP;
+    uint16_t* offsetsP;
+    mtx_t* mutex_characterizationP;
+    uint32_t* numOfCharacterizationPointsP;
+    float* characterisationXP;
+    float* characterisationYP;
+};
+
+union networkfloat{
+    float       flt;
+    uint32_t* uint;
 };
 
 enum {

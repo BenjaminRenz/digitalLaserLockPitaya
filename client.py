@@ -36,8 +36,8 @@ class MessageType(Enum):
     getOpmode=10
     getOpmode_return=11
     
-    getCharPeaks=12
-    getCharPeaks_return=13
+    getCharacterization=12
+    getCharacterization_return=13
 
 
 def connect(Ip):
@@ -193,7 +193,8 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.x_range=range(ADCBUFFERSIZE)
         y=[0]*ADCBUFFERSIZE
         
-        self.plot=self.UpperPlotWidget.plot(self.x_range,y)
+        self.UpperPlot=self.UpperPlotWidget.plot(self.x_range,y)
+        self.LowerPlot=self.LowerPlotWidget.plot(self.x_range,y)
         
         
         self.globalLayout=PyQt5.QtGui.QVBoxLayout()
@@ -220,9 +221,9 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
         #place qObject inside this thread
         self.network_thread = NetworkingWorker(self.Ip)
-        
         self.network_thread.getGraph_return_signal.connect(self.getGraph_return)
         self.network_thread.getSettings_return_signal.connect(self.getSettings_return)
+        self.network_thread.getCharacerization_return_signal.connect(self.getCharacerization_return)
         self.network_thread.networkTX_start_signal.connect(self.networkTX_start)
         self.network_thread.networkTX_end_signal.connect(self.networkTX_end)
         #important, do this after the QObject has been moved to the new thread
@@ -230,12 +231,17 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
         #get initial settings from redpitaya
         self.network_thread.getSettings_signal.emit()
+        #WARNING due to thread affinity you must not tamper timers of other threads (call start, stop, etc.)
         #timer to call getGraph repeadietely
         self.graphUpdateTimer=PyQt5.QtCore.QTimer(self)
-        self.graphUpdateTimer.setInterval(100)
+        self.graphUpdateTimer.setInterval(4000)
         self.graphUpdateTimer.timeout.connect(self.network_thread.getGraph_signal)
+        #timer to check for finished characterization
+        self.characterizationUpdateTimer=PyQt5.QtCore.QTimer(self)
+        self.characterizationUpdateTimer.setInterval(8000)
+        self.characterizationUpdateTimer.timeout.connect(self.network_thread.getCharacerization_signal)
         
-        #self.network_thread.getGraph_signal.emit()
+        
         
         self.graphUpdateTimer.start()
 
@@ -252,15 +258,21 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.network_thread.set_opmode(Opmode.operation_mode_scan.value)
     @PyQt5.QtCore.pyqtSlot()
     def on_opmode_characterize_click(self):
+        self.characterizationUpdateTimer.start()
         self.network_thread.set_opmode(Opmode.operation_mode_characterise.value)
     @PyQt5.QtCore.pyqtSlot()
     def on_opmode_lock_click(self):
         self.network_thread.set_opmode(Opmode.operation_mode_lock.value)
     
+    @PyQt5.QtCore.pyqtSlot(list,list)
+    def getCharacerization_return(self,listx,listy):
+        self.characterizationUpdateTimer.stop()
+        self.LowerPlot.setData(listx, listy)
+        app.processEvents()    
+        
     @PyQt5.QtCore.pyqtSlot(list)
     def getGraph_return(self,list):
-        self.plot.setData(self.x_range, list)
-        #self.PlotWidget.update()
+        self.UpperPlot.setData(self.x_range, list)
         app.processEvents()
         
     @PyQt5.QtCore.pyqtSlot(list)
@@ -281,16 +293,24 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
 #see https://stackoverflow.com/questions/20324804/how-to-use-qthread-correctly-in-pyqt-with-movetothread
 class NetworkingWorker(PyQt5.QtCore.QObject):
-    #emitted signals
+    mainThread=None
+    
+    #consumed signals
     getGraph_signal = PyQt5.QtCore.Signal()
     getSettings_signal = PyQt5.QtCore.Signal()
     setSettings_signal = PyQt5.QtCore.Signal(list)
-    getOffset_signal = PyQt5.QtCore.Signal()    
-    #consumed signals
+    getOffset_signal = PyQt5.QtCore.Signal()  
+    getCharacerization_signal = PyQt5.QtCore.Signal()
+    
+    #emitted signals
     getGraph_return_signal = PyQt5.QtCore.Signal(list)
     getSettings_return_signal = PyQt5.QtCore.Signal(list)
+    getCharacerization_return_signal = PyQt5.QtCore.Signal(list,list)
+    
     networkTX_start_signal = PyQt5.QtCore.Signal()
     networkTX_end_signal = PyQt5.QtCore.Signal()
+    
+    
     
     
     def __init__(self,Ip,*args, **kwargs):
@@ -307,11 +327,13 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
         self.getSettings_signal.connect(self.getSettings)
         self.setSettings_signal.connect(self.setSettings)
         self.getOffset_signal.connect(self.getOffset)
-                
+        self.getCharacerization_signal.connect(self.getCharacerization)
         print("Networking thread initialized")
 
 
-    @PyQt5.QtCore.pyqtSlot()
+
+    #TODO check if int works here
+    @PyQt5.QtCore.pyqtSlot(int) 
     def set_opmode(self,opmode):
         self.networkTX_start_signal.emit()
         type=MessageType.setOpmode.value
@@ -322,7 +344,8 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
         header_tuple = struct.unpack("!ii",buffer)
         requestType = header_tuple[0]
         dataLength = header_tuple[1]
-        if(dataLength!=b"" or requestType==MessageType.setOpmode_return.value):
+        if(dataLength!=0 or requestType!=MessageType.setOpmode_return.value):
+            print(f"got requestType {requestType} should be {MessageType.setOpmode_return.value}, datalength {dataLength}")
             print("Error unexpected network packet after setOpmode")
         self.networkTX_end_signal.emit()
 
@@ -339,14 +362,40 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
         requestType = header_tuple[0]
         dataLength = header_tuple[1]
         print(f"expecting {dataLength} bytes or {dataLength/4} floats")
-        buffer = self.recvall(dataLength)
         if(requestType!=MessageType.getGraph_return.value):
             print("Error unexpected network answer")
+        buffer = self.recvall(dataLength)
         data=struct.unpack("!"+str(dataLength//4)+"f",buffer)
-        #print(data[:20])
         graphy=list(data)
         self.networkTX_end_signal.emit()
         self.getGraph_return_signal.emit(graphy)
+        
+    @PyQt5.QtCore.pyqtSlot()
+    def getCharacerization(self):
+        self.networkTX_start_signal.emit()
+        #send request
+        type=MessageType.getCharacterization.value
+        message = struct.pack("!ii",type,0)
+        self.socket.sendall(message)
+        #recieve answer
+        buffer = self.recvall(8)
+        header_tuple = struct.unpack("!ii",buffer)
+        requestType = header_tuple[0]
+        dataLength = header_tuple[1]
+        if(dataLength==0):
+            print("Data not ready yet. Will check again.")
+            return
+        if(requestType!=MessageType.getCharacterization_return.value):
+            print("Error unexpected network answer")
+        buffer = self.recvall(dataLength//2)
+        datax=struct.unpack("!"+str(dataLength//8)+"f",buffer)
+        graphx=list(datax)
+        buffer = self.recvall(dataLength//2)
+        datay=struct.unpack("!"+str(dataLength//8)+"f",buffer)
+        graphy=list(datax)
+        self.networkTX_end_signal.emit()
+        self.getCharacerization_return_signal.emit(graphx,graphy)
+    
     @PyQt5.QtCore.pyqtSlot(list)
     def setSettings(self,list):    
         self.networkTX_start_signal.emit()
@@ -364,6 +413,7 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
             print("Error unexpected network packet after setSettings")
         self.networkTX_end_signal.emit()
     
+    @PyQt5.QtCore.pyqtSlot()
     def getSettings(self):
         print("getSettings sent")
         self.networkTX_start_signal.emit()
@@ -387,7 +437,7 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
         self.getSettings_return_signal.emit(settingslist)
         print("getSettings returned signal")
 
-    
+    @PyQt5.QtCore.pyqtSlot()
     def getOffset(self):
         print("Not implemented yet")
     

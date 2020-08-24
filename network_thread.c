@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-
 #define TCP_PORT 4242
 #define TCP_MAX_REC_CHUNK_SIZE 4096
 #define BACKLOG 10
@@ -30,8 +29,8 @@ enum {
     getOpmode=10,
     getOpmode_return=11,
     
-    getCharPeaks=12,
-    getCharPeaks_return=13
+    getCharacterization=12,
+    getCharacterization_return=13
     
 };
 
@@ -163,24 +162,18 @@ int thrd_startServer(void* threadinfp){
                     if(thrd_success!=cnd_wait(threadinf.condidion_mainthread_finished_memcpyP,threadinf.mutex_rawdata_bufferP)){
                         exit(1);
                     }
-                    //swap byte order
-                    /*for(int i=0;i<ADCBUFFERSIZE;i++){
-                        uint32_t temp=htonf((uint32_t)threadinf.network_acqBufferP[i]);
-                        threadinf.network_acqBufferP[i]=*((float*)(&temp));
-                        
-                    }*/
                     printf("Start response\n");
                     header[0]=htonl(getGraph_return);
                     header[1]=htonl(ADCBUFFERSIZE*sizeof(float));
                     send_all(accept_socket_fd,header,2*sizeof(int32_t));
-                    /*send_all(accept_socket_fd,threadinf.network_acqBufferP,ADCBUFFERSIZE*sizeof(float));
-                    */
-                    uint32_t* send_databufferp=malloc(sizeof(float)*ADCBUFFERSIZE);
+
+                    //uint32_t* send_databufferp=malloc(sizeof(float)*ADCBUFFERSIZE);
                     for(int i=0;i<ADCBUFFERSIZE;i++){
-                        send_databufferp[i]=htonf(threadinf.network_acqBufferP[i]);
+                        ((uint32_t*)threadinf.network_acqBufferP)[i]=htonf(threadinf.network_acqBufferP[i]);
                     }
-                    send_all(accept_socket_fd,send_databufferp,ADCBUFFERSIZE*sizeof(float));
-                    free(send_databufferp);
+                    //send_all(accept_socket_fd,send_databufferp,ADCBUFFERSIZE*sizeof(float));
+                    send_all(accept_socket_fd,(uint32_t*)threadinf.network_acqBufferP,ADCBUFFERSIZE*sizeof(float));
+                    //free(send_databufferp);
                     printf("send Complete\n");
                 break;
                 case setSettings:{
@@ -270,22 +263,49 @@ int thrd_startServer(void* threadinfp){
                         exit(1);
                     }
                     mtx_lock(threadinf.mutex_new_operation_modeP);
-                    uint32_t opmode=*(threadinf.new_operation_modeP);
+                    uint32_t opmode=htonl(*(threadinf.new_operation_modeP));
                     mtx_unlock(threadinf.mutex_new_operation_modeP);
                     header[0]=htonl(getOpmode_return);
                     header[1]=htonl(sizeof(uint32_t));
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
                     send_all(accept_socket_fd,&opmode,sizeof(uint32_t));
                 }
-                case getCharPeaks:{
+                case getCharacterization:{
                     printf("Handle getCharacterization request\n");
                     if(dataLength!=0){
-                        fprintf(stderr,"Invalid data format for setOpmode.\n");
+                        fprintf(stderr,"Invalid data format for getCharacterization.\n");
                         close(accept_socket_fd);
                         close(socket_fd);
                         exit(1);
                     }
-                    mtx_lock()
+                    mtx_lock(threadinf.mutex_characterizationP);
+                    uint32_t numpoints=*(threadinf.numOfCharacterizationPointsP);
+                    header[0]=htonl(getCharacterization_return);
+                    header[1]=htonl(numpoints*2*sizeof(float));
+                    send_all(accept_socket_fd,header,2*sizeof(uint32_t));
+                    printf("send getCharacterization_return header\n");
+                    //convert to network byte order
+                    /*for(uint32_t datapoint=0;datapoint<numpoints;datapoint++){
+                        printf("before conv\n");
+                        ((uint32_t*)(threadinf.characterisationXP))[datapoint]=htonf(threadinf.characterisationXP[datapoint]);
+                        printf("after conv\n");
+                    }*/
+                    for(uint32_t datapoint=0;datapoint<numpoints;datapoint++){
+                        printf("before conv2\n");
+                        //error happens when dereferencing pointer, possibly because of wrong memory alighment
+                        printf("printing test 0 %p",threadinf.characterisationXP);
+                        /*printf("printing test 1 %x",(int32_t)threadinf.characterisationYP);
+                        ((uint32_t*)(threadinf.characterisationYP))[datapoint]=htonf(threadinf.characterisationYP[datapoint]);
+                        printf("after conv2\n");*/
+                    }
+
+                    send_all(accept_socket_fd,threadinf.characterisationXP,numpoints*sizeof(uint32_t));
+                    send_all(accept_socket_fd,threadinf.characterisationYP,numpoints*sizeof(uint32_t));
+                    if(numpoints){
+                        free(threadinf.characterisationXP);
+                        free(threadinf.characterisationYP);
+                    }
+                    mtx_unlock(threadinf.mutex_characterizationP);
                 }
                 break;
                 default:
