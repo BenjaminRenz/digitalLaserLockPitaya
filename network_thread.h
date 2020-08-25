@@ -10,10 +10,9 @@ struct threadinfo{
     mtx_t* mutex_settingsP;
     float* settingsP;
     mtx_t* mutex_new_operation_modeP;
-    uint32_t* new_operation_modeP;
-    uint16_t* offsetsP;
+    uint32_t* new_operation_mode;
     mtx_t* mutex_characterizationP;
-    uint32_t* numOfCharacterizationPointsP;
+    uint32_t* numOfCharacterizationPoints;
     float* characterisationXP;
     float* characterisationYP;
 };

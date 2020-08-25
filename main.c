@@ -118,7 +118,7 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
     static uint16_t* peaksx_scan_cav_P;
     static float* peaksy_scan_cav_P;
     static uint16_t valid_peaks_scan_cav;
-    
+
     static float cav_voltage_per_peakdist;
     static float grat_voltage_per_peakdist;
     static float average;
@@ -126,7 +126,7 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
     static float* characterisationDataXP;
     static float* characterisationDataYP;
     static uint32_t valid_peaks_charact;
-    
+
     static int scandir;
     if(firstrun){
         SetGenerator(RP_CH_1,SLOW_FREQ,-1.0f);
@@ -242,7 +242,7 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
                         characterisationDataXP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=FLT_MAX;
                         characterisationDataYP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=FLT_MAX;
                     }
-                }                
+                }
                 scannum++;
                 return;
             }
@@ -289,25 +289,25 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
                 free(peaksx_scan_cav_P);
                 free(peaksy_scan_cav_P);
                 CharacterisationStep=char_step_finished;
-               
+
                 //check how many peaks were found
                 fsortPeaksX(NumScanSteps*MaxNumOfPeaks_Scan_Cav,characterisationDataXP,characterisationDataYP);
                 valid_peaks_charact=0;
                 for(;valid_peaks_charact<NumScanSteps*MaxNumOfPeaks_Scan_Cav;valid_peaks_charact++){
-                    
+
                     if(characterisationDataXP[valid_peaks_charact]==FLT_MAX){
                         break;
                     }
                 }
-                printf("got %d valid points\n",valid_peaks_charact);                   
-                
+                printf("got %d valid points\n",valid_peaks_charact);
+
                 //send data to thread
                 mtx_lock(threadinfP->mutex_characterizationP);
                 *(threadinfP->numOfCharacterizationPointsP)=valid_peaks_charact;
                 threadinfP->characterisationXP=characterisationDataXP;
                 threadinfP->characterisationYP=characterisationDataYP;
                 mtx_unlock(threadinfP->mutex_characterizationP);
-                
+
                 //exit the characerization mode, by pretending that the client has selected scan (TODO hacky)
                 mtx_lock(threadinfP->mutex_new_operation_modeP);
                 *(threadinfP->new_operation_modeP)=operation_mode_scan;
@@ -326,17 +326,18 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
 
 
 int main(int argc, char **argv){
-    
+
     CHK_ERR(rp_Init());
 
     //create mutex
-    mtx_t mutex_network_acqbuffer;     //protects one buffer of oscilloscope data used for network transfer
-    CHK_ERR_ACT(mtx_init(&mutex_network_acqbuffer,mtx_plain),exit(1));
-    mtx_t mutex_new_operation_mode;
+    //"for inter-process synchronization, a mutex needs to be allocated in memory shared between these processes...", so it needs to be on the heap I guess
+    mtx_t* mutex_network_acqbufferP=(mtx_t*)malloc(sizeof(mtx_t));     //protects one buffer of oscilloscope data used for network transfer
+    CHK_ERR_ACT(mtx_init(mutex_network_acqbufferP,mtx_plain),exit(1));
+    mtx_t mutex_new_operation_modeP=(mtx_t*)malloc(sizeof(mtx_t));
     CHK_ERR_ACT(mtx_init(&mutex_new_operation_mode,mtx_plain),exit(1));
-    mtx_t mutex_settings;
+    mtx_t mutex_settingsP=(mtx_t*)malloc(sizeof(mtx_t));
     CHK_ERR_ACT(mtx_init(&mutex_settings,mtx_plain),exit(1));
-    mtx_t mutex_characterization;
+    mtx_t mutex_characterizationP=(mtx_t*)malloc(sizeof(mtx_t));
     CHK_ERR_ACT(mtx_init(&mutex_characterization,mtx_plain),exit(1));
 
     //create condition
@@ -345,25 +346,25 @@ int main(int argc, char **argv){
         exit(1);
     }
 
-    //create data structures which are protected by mutexes
+    //create data structures which are protected by mutexes, only heap objects are allowed, stack is not shared between threads
     float* network_acqbufferP=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
-    uint32_t new_operation_mode=operation_mode_scan;
-    uint32_t numOfCharacterizationPoints=0;
-    
-    //initialize interprocess communication sturct
-    struct threadinfo threadinf;
+    //uint32_t new_operation_mode=operation_mode_scan;
+    //uint32_t numOfCharacterizationPoints=0;
 
-    threadinf.mutex_rawdata_bufferP=&mutex_network_acqbuffer;
+    //initialize interprocess communication sturct
+    struct threadinfo threadinfP=(struct threadinfo*)malloc(sizeof(struct threadinfo));
+
+    threadinf.mutex_rawdata_bufferP=mutex_network_acqbufferP;
     threadinf.mutex_settingsP=&mutex_settings;
     threadinf.mutex_new_operation_modeP=&mutex_new_operation_mode;
     threadinf.mutex_characterizationP=&mutex_characterization;
-    
+
     threadinf.new_operation_modeP=&new_operation_mode;
     threadinf.condidion_mainthread_finished_memcpyP=&condidion_mainthread_finished_memcpy;
     threadinf.network_acqBufferP=network_acqbufferP;
     threadinf.numOfCharacterizationPointsP=&numOfCharacterizationPoints;
 
-    
+
     //create thread
     thrd_t networkingThread;
     if(thrd_success!=thrd_create(&networkingThread,thrd_startServer,(void*)&threadinf)){
@@ -635,7 +636,7 @@ void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
                 float tempy=peaksyP[bubble_offset];
                 peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
                 peaksyP[bubble_offset+1]=tempy;
-            }   
+            }
         }
         numOfSwaps--;
     }while(swapped_flag);
