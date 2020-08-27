@@ -113,11 +113,14 @@ enum {
     char_step_scan_direction,           //scan moving the grating 1/4 * grat_voltage_per_peakdist to check movement direction
     char_step_scan_finetune,            //rescan cavity to check if applying grat_voltage_per_peakdist as offset returns the same image as the initial scan (if not correct offset)
     char_step_scan_cav_mv_grat,         //scan cavity 1000 times while slowly varying the grating voltage from -grat_voltage_per_peakdist/2 to grat_voltage_per_peakdist/2
-    char_step_finished
+    char_step_finished,
+    char_step_testhack
 };
 
 void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP){
-    static int CharacterisationStep=char_step_scan_cav;
+    //TODO remove this hack, just used for testing
+    static int CharacterisationStep=char_step_testhack;
+    //static int CharacterisationStep=char_step_scan_cav;
     //TODO the three entries below could be localized inside their specific case section
     static uint16_t* peaksx_scan_cav_P;
     static float* peaksy_scan_cav_P;
@@ -145,6 +148,46 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
     CHK_ERR(rp_AcqStart());
     CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));    //rearm trigger source
     switch(CharacterisationStep){
+        case char_step_testhack:
+            characterisationDataXP=(float*)malloc(NumScanSteps*MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            characterisationDataYP=(float*)malloc(NumScanSteps*MaxNumOfPeaks_Scan_Cav*sizeof(float));
+            for(uint32_t scannum=0;scannum<NumScanSteps;scannum++){
+                for(uint32_t peaknum=0;peaknum<MaxNumOfPeaks_Scan_Cav;peaknum++){
+                    if(((float)rand())/(float)RAND_MAX*MaxNumOfPeaks_Scan_Cav<=peaknum){
+                        characterisationDataXP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=((float)rand())/(float)RAND_MAX;
+                        characterisationDataYP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=((float)rand())/(float)RAND_MAX;
+                    }else{
+                        characterisationDataXP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=FLT_MAX;
+                        characterisationDataYP[(uint32_t)MaxNumOfPeaks_Scan_Cav*scannum+peaknum]=FLT_MAX;
+                    }
+                }
+            }
+            
+            fsortPeaksX(NumScanSteps*MaxNumOfPeaks_Scan_Cav,characterisationDataXP,characterisationDataYP);
+            valid_peaks_charact=0;
+            for(;valid_peaks_charact<NumScanSteps*MaxNumOfPeaks_Scan_Cav;valid_peaks_charact++){
+
+                if(characterisationDataXP[valid_peaks_charact]==FLT_MAX){
+                    break;
+                }
+            }
+            printf("got %d valid points\n",valid_peaks_charact);
+
+            //send data to thread
+            mtx_lock(&threadinfP->mutex_network_characterization);
+            threadinfP->network_numOfCharacterizationPoints=valid_peaks_charact;
+            threadinfP->network_characterisationXP=characterisationDataXP;
+            threadinfP->network_characterisationYP=characterisationDataYP;
+            mtx_unlock(&threadinfP->mutex_network_characterization);
+            printf("send data to thread2\n");
+            //exit the characerization mode, by pretending that the client has selected scan (TODO hacky)
+            mtx_lock(&threadinfP->mutex_network_operation_mode);
+            printf("lockopmode\n");
+            threadinfP->network_operation_mode=operation_mode_scan;
+            printf("lockopmode2\n");
+            mtx_unlock(&threadinfP->mutex_network_operation_mode);
+            printf("switch mode\n");
+        break;
         case char_step_scan_cav:
             peaksx_scan_cav_P=(uint16_t*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(uint16_t));
             peaksy_scan_cav_P=(float*)malloc(MaxNumOfPeaks_Scan_Cav*sizeof(float));
@@ -354,6 +397,8 @@ int main(int argc, char **argv){
     threadinfP->network_operation_mode=operation_mode_scan;
     threadinfP->network_acqBufferP=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
     threadinfP->network_numOfCharacterizationPoints=0;
+    threadinfP->network_characterisationXP=NULL;
+    threadinfP->network_characterisationYP=NULL;
 
     //create thread
     thrd_t networkingThread;
@@ -375,13 +420,16 @@ int main(int argc, char **argv){
     makewt(ADCBUFFERSIZE>>2,ooura_fft_ipP,ooura_fft_wP);
 
     while(1){
+        //TODO remove hack
         static uint32_t last_operation_mode=operation_mode_not_initialized;
 
         //check if a new mode of operation is requested
         mtx_lock(&threadinfP->mutex_network_operation_mode);
         if(last_operation_mode!=threadinfP->network_operation_mode){
             last_operation_mode=threadinfP->network_operation_mode;
+            mtx_unlock(&threadinfP->mutex_network_operation_mode);
             if(last_operation_mode==operation_mode_shutdown){//not inside switch, so break will stop while(1) loop
+                printf("Shutdown command reviced\n");
                 break;
             }
             switch(last_operation_mode){
@@ -391,7 +439,7 @@ int main(int argc, char **argv){
                 break;
                 case operation_mode_characterise:
                     printf("sw char\n");
-                    doCharacterise(1,acqbufferP,0);
+                    doCharacterise(1,acqbufferP,threadinfP);
                 break;
                 case operation_mode_lock:
                     printf("Not ready\n");
@@ -400,7 +448,6 @@ int main(int argc, char **argv){
                     printf("Error invalid opmode %d",last_operation_mode);
                 break;
             }
-            mtx_unlock(&threadinfP->mutex_network_operation_mode);
         }else{
             mtx_unlock(&threadinfP->mutex_network_operation_mode);
             switch(last_operation_mode){
@@ -436,6 +483,7 @@ int main(int argc, char **argv){
     }
 	/* Releasing resources */
     //TODO delete mutexes and signals?
+    printf("terminate network thread\n");
 	thrd_join(networkingThread,NULL);
 	free(threadinfP->network_acqBufferP);
     free(threadinfP);

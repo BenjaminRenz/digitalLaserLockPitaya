@@ -20,6 +20,7 @@ class Opmode(Enum):
     operation_mode_scan=40
     operation_mode_characterise=41
     operation_mode_lock=42
+    operation_mode_shutdown=43
 
 class MessageType(Enum):
     getGraph=0
@@ -142,16 +143,19 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.opmode_scan_button = PyQt5.QtGui.QPushButton("Scan", self)
         self.opmode_characterize_button = PyQt5.QtGui.QPushButton("Characterize", self)
         self.opmode_lock_button = PyQt5.QtGui.QPushButton("Lock", self)
+        self.opmode_shutdown_button = PyQt5.QtGui.QPushButton("Shutdown", self)
         self.opmode_scan_button.clicked.connect(self.on_opmode_scan_click)
         self.opmode_characterize_button.clicked.connect(self.on_opmode_characterize_click)
         self.opmode_lock_button.clicked.connect(self.on_opmode_lock_click)
+        self.opmode_shutdown_button.clicked.connect(self.on_opmode_shutdown_click)
         
         self.UpperButtonLayout=PyQt5.QtGui.QHBoxLayout()
         self.UpperButtonLayout.addWidget(self.label_opmode)
         self.UpperButtonLayout.addWidget(self.opmode_scan_button)
         self.UpperButtonLayout.addWidget(self.opmode_characterize_button)
         self.UpperButtonLayout.addWidget(self.opmode_lock_button)
-        
+        self.UpperButtonLayout.addWidget(self.opmode_shutdown_button)
+
         self.ledit_status = PyQt5.QtGui.QLineEdit()
         self.ledit_status.setReadOnly(True)
         
@@ -252,7 +256,9 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         for ledit in self.ledit_settings_list:
             settings.append(float(ledit.text()))
         self.network_thread.setSettings_signal.emit(settings)
-        
+    @PyQt5.QtCore.pyqtSlot()
+    def on_opmode_shutdown_click(self):
+        self.network_thread.set_opmode(Opmode.operation_mode_shutdown.value)
     @PyQt5.QtCore.pyqtSlot()
     def on_opmode_scan_click(self):
         self.network_thread.set_opmode(Opmode.operation_mode_scan.value)
@@ -267,6 +273,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
     @PyQt5.QtCore.pyqtSlot(list,list)
     def getCharacerization_return(self,listx,listy):
         self.characterizationUpdateTimer.stop()
+        print(f"got data len x {len(listx)} and len y {len(listy)}")
         self.LowerPlot.setData(listx, listy)
         app.processEvents()    
         
@@ -387,12 +394,15 @@ class NetworkingWorker(PyQt5.QtCore.QObject):
             return
         if(requestType!=MessageType.getCharacterization_return.value):
             print("Error unexpected network answer")
+        if(dataLength%8):
+            print("Error data not aligned")
+            return
         buffer = self.recvall(dataLength//2)
         datax=struct.unpack("!"+str(dataLength//8)+"f",buffer)
         graphx=list(datax)
         buffer = self.recvall(dataLength//2)
         datay=struct.unpack("!"+str(dataLength//8)+"f",buffer)
-        graphy=list(datax)
+        graphy=list(datay)
         self.networkTX_end_signal.emit()
         self.getCharacerization_return_signal.emit(graphx,graphy)
     

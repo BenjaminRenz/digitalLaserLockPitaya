@@ -170,6 +170,12 @@ int thrd_startServer(void* threadInfFromMain){
             switch(requestType){
                 case getGraph:
                     printf("Handle getGraph request\n");
+                    if(dataLength){
+                        fprintf(stderr,"Invalid request format for getGraph.\n");
+                        close(accept_socket_fd);
+                        close(socket_fd);
+                        exit(1);
+                    }
                     //order the main thread to save the next aquisition into the buffer and wait for completion of this task
                     if(thrd_success!=cnd_wait(&threadinfP->condidion_mainthread_finished_memcpy,&threadinfP->mutex_network_acqBuffer)){
                         exit(1);
@@ -262,9 +268,13 @@ int thrd_startServer(void* threadInfFromMain){
                     mtx_lock(&threadinfP->mutex_network_operation_mode);
                     threadinfP->network_operation_mode=opmode;
                     mtx_unlock(&threadinfP->mutex_network_operation_mode);
+                    printf("set opmode to %d",opmode);
                     header[0]=htonl(setOpmode_return);
                     header[1]=0;
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
+                    if(opmode==operation_mode_shutdown){
+                        return 0;
+                    }
                 }
                 break;
                 case getOpmode:{
@@ -297,25 +307,21 @@ int thrd_startServer(void* threadInfFromMain){
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
                     printf("send getCharacterization_return header\n");
                     //convert to network byte order
-                    /*for(uint32_t datapoint=0;datapoint<numpoints;datapoint++){
-                        printf("before conv\n");
-                        ((uint32_t*)(threadinf.characterisationXP))[datapoint]=htonf(threadinf.characterisationXP[datapoint]);
-                        printf("after conv\n");
-                    }*/
                     for(uint32_t datapoint=0;datapoint<threadinfP->network_numOfCharacterizationPoints;datapoint++){
-                        printf("before conv2\n");
-                        //error happens when dereferencing pointer, possibly because of wrong memory alighment
-                        printf("printing test 0 %p",threadinfP->network_characterisationXP);
-                        /*printf("printing test 1 %x",(int32_t)threadinf.characterisationYP);
-                        ((uint32_t*)(threadinf.characterisationYP))[datapoint]=htonf(threadinf.characterisationYP[datapoint]);
-                        printf("after conv2\n");*/
+                        printf("x %f\t",threadinfP->network_characterisationXP[datapoint]);
+                        printf("y %f\n",threadinfP->network_characterisationYP[datapoint]);
+                        ((uint32_t*)threadinfP->network_characterisationXP)[datapoint]=htonf(threadinfP->network_characterisationXP[datapoint]);
                     }
-
-                    send_all(accept_socket_fd,threadinfP->network_characterisationXP,threadinfP->network_numOfCharacterizationPoints*sizeof(uint32_t));
-                    send_all(accept_socket_fd,threadinfP->network_characterisationYP,threadinfP->network_numOfCharacterizationPoints*sizeof(uint32_t));
+                    for(uint32_t datapoint=0;datapoint<threadinfP->network_numOfCharacterizationPoints;datapoint++){
+       
+                        ((uint32_t*)threadinfP->network_characterisationYP)[datapoint]=htonf(threadinfP->network_characterisationYP[datapoint]);
+                    }
                     if(threadinfP->network_numOfCharacterizationPoints){
+                        send_all(accept_socket_fd,threadinfP->network_characterisationXP,threadinfP->network_numOfCharacterizationPoints*sizeof(uint32_t));
+                        send_all(accept_socket_fd,threadinfP->network_characterisationYP,threadinfP->network_numOfCharacterizationPoints*sizeof(uint32_t));
                         free(threadinfP->network_characterisationXP);
                         free(threadinfP->network_characterisationYP);
+                        threadinfP->network_numOfCharacterizationPoints=0;
                     }
                     mtx_unlock(&threadinfP->mutex_network_characterization);
                 }
