@@ -3,29 +3,31 @@
 
 #define ADCBUFFERSIZE 16384
 
-struct threadinfo{
-    mtx_t* mutex_rawdata_bufferP;
-    cnd_t* condidion_mainthread_finished_memcpyP;
+struct threadinfo{  //the mutexes will protect the memory of the directly following pointers on heap
+    mtx_t mutex_network_acqBuffer;
+    cnd_t condidion_mainthread_finished_memcpy;
     float* network_acqBufferP;
-    mtx_t* mutex_settingsP;
-    float* settingsP;
-    mtx_t* mutex_new_operation_modeP;
-    uint32_t* new_operation_mode;
-    mtx_t* mutex_characterizationP;
-    uint32_t* numOfCharacterizationPoints;
-    float* characterisationXP;
-    float* characterisationYP;
+
+    mtx_t mutex_network_settings;
+    float* network_settingsP;
+
+    mtx_t mutex_network_operation_mode;
+    uint32_t network_operation_mode;
+
+    mtx_t mutex_network_characterization;
+    uint32_t network_numOfCharacterizationPoints;
+    float* network_characterisationXP;
+    float* network_characterisationYP;
 };
 
-union networkfloat{
-    float       flt;
-    uint32_t* uint;
-};
+
 
 enum {
+    operation_mode_not_initialized=0,
     operation_mode_scan=40,
     operation_mode_characterise=41,
-    operation_mode_lock=42
+    operation_mode_lock=42,
+    operation_mode_shutdown=43
 };
 
 

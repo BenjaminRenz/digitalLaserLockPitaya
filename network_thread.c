@@ -6,6 +6,9 @@
 #include "network_thread.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
+//check if we can represent a float as four bytes, this property is used to send the float over the network
+static_assert(sizeof(uint32_t) == sizeof(float),
 
 #define TCP_PORT 4242
 #define TCP_MAX_REC_CHUNK_SIZE 4096
@@ -23,27 +26,36 @@ enum {
     getSettings_return=5,
     getOffset=6,
     getOffset_return=7,
-    
+
     setOpmode=8,
     setOpmode_return=9,
     getOpmode=10,
     getOpmode_return=11,
-    
+
     getCharacterization=12,
     getCharacterization_return=13
-    
+
 };
 
 float settings[NUMSETTINGS]={1.0f,2.0f,3.0f,4.0f};
 int offsets[NUMLASERS]={10,50};
 
+//float to network uint32 conversion routines
+union networkfloat{
+    float       flt;
+    uint32_t* uint32;
+};
+
 uint32_t htonf(float in){
-    return htonl(*((uint32_t*)(&in)));
+    union networkfloat temp;
+    temp.flt=in;
+    return htonl(temp.uint32);
 }
 
 float ntohf(uint32_t in){
-    uint32_t temp=ntohl(in);
-    return *((float*)(&temp));
+    union networkfloat temp;
+    temp.uint32=ntohl(in);
+    return temp.flt;
 }
 
 int send_all(int socket, void* buffer, size_t length){
@@ -83,12 +95,11 @@ int recv_all(int socket, void* buffer, size_t length){
 }
 
 int thrd_startServer(void* threadinfp){
-    struct threadinfo threadinf=*((struct threadinfo*)threadinfp);
     //lock rawdata buffer until the user request data
-    if(thrd_success!=mtx_lock(threadinf.mutex_rawdata_bufferP)){
+    if(thrd_success!=mtx_lock(threadinfP->mutex_rawdata_bufferP)){
         exit(1);
     }
-    
+
     int ret;    //return temp int
     //create tcp socket with ipv4 address, use AF_INET6  for ipv6
     int socket_fd=socket(AF_INET, SOCK_STREAM, 0);
@@ -114,9 +125,9 @@ int thrd_startServer(void* threadinfp){
         close(socket_fd);
         exit(1);
     }
-    
-    
-    
+
+
+
     while(1){
         //accept only one connection in que on this socket
         struct sockaddr_in clnt_address;
@@ -153,13 +164,13 @@ int thrd_startServer(void* threadinfp){
                 close(accept_socket_fd);
                 break;
             }
-            
+
             //Handle request
             switch(requestType){
                 case getGraph:
                     printf("Handle getGraph request\n");
                     //order the main thread to save the next aquisition into the buffer and wait for completion of this task
-                    if(thrd_success!=cnd_wait(threadinf.condidion_mainthread_finished_memcpyP,threadinf.mutex_rawdata_bufferP)){
+                    if(thrd_success!=cnd_wait(&threadinfP->condidion_mainthread_finished_memcpy,&threadinfP->mutex_network_acqBuffer)){
                         exit(1);
                     }
                     printf("Start response\n");
@@ -169,10 +180,11 @@ int thrd_startServer(void* threadinfp){
 
                     //uint32_t* send_databufferp=malloc(sizeof(float)*ADCBUFFERSIZE);
                     for(int i=0;i<ADCBUFFERSIZE;i++){
-                        ((uint32_t*)threadinf.network_acqBufferP)[i]=htonf(threadinf.network_acqBufferP[i]);
+                        //TODO don't use this sloppy conversion to uint32_t*
+                        ((uint32_t*)threadinfP->network_acqBufferP)[i]=htonf(threadinfP->network_acqBufferP[i]);
                     }
                     //send_all(accept_socket_fd,send_databufferp,ADCBUFFERSIZE*sizeof(float));
-                    send_all(accept_socket_fd,(uint32_t*)threadinf.network_acqBufferP,ADCBUFFERSIZE*sizeof(float));
+                    send_all(accept_socket_fd,(uint32_t*)threadinfP->network_acqBufferP,ADCBUFFERSIZE*sizeof(float));
                     //free(send_databufferp);
                     printf("send Complete\n");
                 break;
@@ -240,15 +252,15 @@ int thrd_startServer(void* threadinfp){
                         exit(1);
                     }
                     uint32_t opmode=ntohl(((uint32_t*)rec_databuffp)[0]);
-                    if(opmode!=operation_mode_scan&&opmode!=operation_mode_characterise&&opmode!=operation_mode_lock){
+                    if(opmode!=operation_mode_scan&&opmode!=operation_mode_characterise&&opmode!=operation_mode_lock&&opmode!=operation_mode_shutdown){
                         fprintf(stderr,"Invalid opMode.\n");
                         close(accept_socket_fd);
                         close(socket_fd);
                         exit(1);
                     }
-                    mtx_lock(threadinf.mutex_new_operation_modeP);
-                    *(threadinf.new_operation_modeP)=opmode;
-                    mtx_unlock(threadinf.mutex_new_operation_modeP);
+                    mtx_lock(&threadinfP->mutex_network_operation_mode);
+                    threadinfP->network_operation_mode=opmode;
+                    mtx_unlock(&threadinfP->mutex_network_operation_mode);
                     header[0]=htonl(setOpmode_return);
                     header[1]=0;
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
@@ -262,9 +274,9 @@ int thrd_startServer(void* threadinfp){
                         close(socket_fd);
                         exit(1);
                     }
-                    mtx_lock(threadinf.mutex_new_operation_modeP);
-                    uint32_t opmode=htonl(*(threadinf.new_operation_modeP));
-                    mtx_unlock(threadinf.mutex_new_operation_modeP);
+                    mtx_lock(&threadinfP->mutex_network_operation_mode);
+                    uint32_t opmode=htonl(threadinfP->network_operation_mode);
+                    mtx_unlock(&threadinfP->mutex_network_operation_mode);
                     header[0]=htonl(getOpmode_return);
                     header[1]=htonl(sizeof(uint32_t));
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
@@ -278,10 +290,9 @@ int thrd_startServer(void* threadinfp){
                         close(socket_fd);
                         exit(1);
                     }
-                    mtx_lock(threadinf.mutex_characterizationP);
-                    uint32_t numpoints=*(threadinf.numOfCharacterizationPointsP);
+                    mtx_lock(&threadinfP->mutex_network_characterization);
                     header[0]=htonl(getCharacterization_return);
-                    header[1]=htonl(numpoints*2*sizeof(float));
+                    header[1]=htonl(threadinfP->network_numOfCharacterizationPoints*2*sizeof(float));
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));
                     printf("send getCharacterization_return header\n");
                     //convert to network byte order
@@ -290,7 +301,7 @@ int thrd_startServer(void* threadinfp){
                         ((uint32_t*)(threadinf.characterisationXP))[datapoint]=htonf(threadinf.characterisationXP[datapoint]);
                         printf("after conv\n");
                     }*/
-                    for(uint32_t datapoint=0;datapoint<numpoints;datapoint++){
+                    for(uint32_t datapoint=0;datapoint<threadinfP->network_numOfCharacterizationPoints;datapoint++){
                         printf("before conv2\n");
                         //error happens when dereferencing pointer, possibly because of wrong memory alighment
                         printf("printing test 0 %p",threadinf.characterisationXP);
@@ -305,7 +316,7 @@ int thrd_startServer(void* threadinfp){
                         free(threadinf.characterisationXP);
                         free(threadinf.characterisationYP);
                     }
-                    mtx_unlock(threadinf.mutex_characterizationP);
+                    mtx_unlock(&threadinfP->mutex_network_characterization);
                 }
                 break;
                 default:
@@ -315,7 +326,7 @@ int thrd_startServer(void* threadinfp){
             free(rec_databuffp);
         }
     }
-    
+
     //close socket
     int return_val=close(socket_fd);
     if(return_val!=0){

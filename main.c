@@ -64,10 +64,13 @@ void        doCorrelation(float* fft_in_outP, float* corr_luP,int* ooura_fft_ipP
 //operation modes
 void doLock(int firstrun,float* acqbufferP){
     if(firstrun){
+        CHK_ERR(rp_AcqReset());
+        //Setup Generator
         SetGenerator(RP_CH_1,FAST_FREQ,0.0);
+        //Setup Aquisition
         CHK_ERR(rp_AcqSetDecimation(FAST_DEC));
         CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));       //trigger will be centered around maximum of triangle
-
+        //Start aquisition
         CHK_ERR(rp_AcqStart());  //start aquisition into ringbuffer
         CHK_ERR(rp_AcqSetTriggerSrc(RP_TRIG_SRC_AWG_PE));
         CHK_ERR(rp_GenTriggerEventCondition(RP_GEN_TRIG_EVT_A_START));
@@ -80,6 +83,7 @@ void doLock(int firstrun,float* acqbufferP){
 
 void doScan(int firstrun,float* acqbufferP){
     if(firstrun){
+        CHK_ERR(rp_AcqReset());
         //Setup Generator
         SetGenerator(RP_CH_1,FAST_FREQ,0.0);
         //Setup Aquisition
@@ -129,6 +133,7 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
 
     static int scandir;
     if(firstrun){
+        CHK_ERR(rp_AcqReset());
         SetGenerator(RP_CH_1,SLOW_FREQ,-1.0f);
         CHK_ERR(rp_AcqSetDecimation(SLOW_DEC));
         CHK_ERR(rp_AcqSetTriggerDelay(ADCBUFFERSIZE/2));
@@ -329,41 +334,26 @@ int main(int argc, char **argv){
 
     CHK_ERR(rp_Init());
 
+    //create inter-thread communication struct in heap memory
+    struct threadinfo threadinfP=(struct threadinfo*)malloc(sizeof(struct threadinfo));
+
     //create mutex
-    //"for inter-process synchronization, a mutex needs to be allocated in memory shared between these processes...", so it needs to be on the heap I guess
-    mtx_t* mutex_network_acqbufferP=(mtx_t*)malloc(sizeof(mtx_t));     //protects one buffer of oscilloscope data used for network transfer
-    CHK_ERR_ACT(mtx_init(mutex_network_acqbufferP,mtx_plain),exit(1));
-    mtx_t mutex_new_operation_modeP=(mtx_t*)malloc(sizeof(mtx_t));
-    CHK_ERR_ACT(mtx_init(&mutex_new_operation_mode,mtx_plain),exit(1));
-    mtx_t mutex_settingsP=(mtx_t*)malloc(sizeof(mtx_t));
-    CHK_ERR_ACT(mtx_init(&mutex_settings,mtx_plain),exit(1));
-    mtx_t mutex_characterizationP=(mtx_t*)malloc(sizeof(mtx_t));
-    CHK_ERR_ACT(mtx_init(&mutex_characterization,mtx_plain),exit(1));
+    //"using pthreads.h it would be sufficient to pass pointers to mutexes on the main thread's stack, but this is implementation dependent, so I'm using the heap allocated inter-thread commuication struct instead.W
+    //TODO check against thrd_success and not 0
+    CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_acqBuffer;,mtx_plain),exit(1));
+    CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_operation_mode,mtx_plain),exit(1));
+    CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_settings,mtx_plain),exit(1));
+    CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_characterization,mtx_plain),exit(1));
 
     //create condition
-    cnd_t condidion_mainthread_finished_memcpy;
-    if(thrd_success!=cnd_init(&condidion_mainthread_finished_memcpy)){
+    if(thrd_success!=cnd_init(&threadinfP->condidion_mainthread_finished_memcpy)){
         exit(1);
     }
 
-    //create data structures which are protected by mutexes, only heap objects are allowed, stack is not shared between threads
-    float* network_acqbufferP=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
-    //uint32_t new_operation_mode=operation_mode_scan;
-    //uint32_t numOfCharacterizationPoints=0;
-
-    //initialize interprocess communication sturct
-    struct threadinfo threadinfP=(struct threadinfo*)malloc(sizeof(struct threadinfo));
-
-    threadinf.mutex_rawdata_bufferP=mutex_network_acqbufferP;
-    threadinf.mutex_settingsP=&mutex_settings;
-    threadinf.mutex_new_operation_modeP=&mutex_new_operation_mode;
-    threadinf.mutex_characterizationP=&mutex_characterization;
-
-    threadinf.new_operation_modeP=&new_operation_mode;
-    threadinf.condidion_mainthread_finished_memcpyP=&condidion_mainthread_finished_memcpy;
-    threadinf.network_acqBufferP=network_acqbufferP;
-    threadinf.numOfCharacterizationPointsP=&numOfCharacterizationPoints;
-
+    //initialize pointers in interprocess communication sturct
+    threadinfP->network_operation_mode=operation_mode_scan;
+    threadinfP->network_acqBufferP=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
+    threadinfP->network_numOfCharacterizationPoints=0;
 
     //create thread
     thrd_t networkingThread;
@@ -373,6 +363,8 @@ int main(int argc, char **argv){
 
     //create storage for methods
     float* acqbufferP=(float*) malloc(ADCBUFFERSIZE*sizeof(float));
+
+    //create fft storage and initialize
     int* ooura_fft_ipP=(int*) malloc(sqrt(ADCBUFFERSIZE)*sizeof(int));
     float* ooura_fft_wP=(float*) malloc(ADCBUFFERSIZE/2*sizeof(float));
     //lookup storage for correlation
@@ -382,19 +374,17 @@ int main(int argc, char **argv){
     //initialize fft lookup tables
     makewt(ADCBUFFERSIZE>>2,ooura_fft_ipP,ooura_fft_wP);
 
-    //startup
-    CHK_ERR(rp_AcqReset());
-    printf("do scan\n");
-    doScan(1,acqbufferP);
-
     while(1){
-        static uint32_t last_operation_mode=operation_mode_scan;
+        static uint32_t last_operation_mode=operation_mode_not_initialized;
 
         //check if a new mode of operation is requested
-        mtx_lock(&mutex_new_operation_mode);
-        if(last_operation_mode!=new_operation_mode){
-            last_operation_mode=new_operation_mode;
-            switch(new_operation_mode){
+        mtx_lock(&threadinfP->mutex_network_operation_mode);
+        if(last_operation_mode!=threadinfP->network_operation_mode){
+            last_operation_mode=threadinfP->network_operation_mode;
+            if(last_operation_mode==operation_mode_shutdown){//not inside switch, so break will stop while(1) loop
+                break;
+            }
+            switch(last_operation_mode){
                 case operation_mode_scan:
                     printf("sw scan\n");
                     doScan(1,acqbufferP);
@@ -407,12 +397,12 @@ int main(int argc, char **argv){
                     printf("Not ready\n");
                 break;
                 default:
-                    printf("Error invalid opmode %d",new_operation_mode);
+                    printf("Error invalid opmode %d",last_operation_mode);
                 break;
             }
-            mtx_unlock(&mutex_new_operation_mode);
+            mtx_unlock(&threadinfP->mutex_network_operation_mode);
         }else{
-            mtx_unlock(&mutex_new_operation_mode);
+            mtx_unlock(&threadinfP->mutex_network_operation_mode);
             switch(last_operation_mode){
                 case operation_mode_scan:
                     doScan(0,acqbufferP);
@@ -430,7 +420,7 @@ int main(int argc, char **argv){
 
         }
 
-        //Check if network thread is requesting data
+        //Check if network thread is requesting graph data
         int ret=mtx_trylock(&mutex_network_acqbuffer);
         if(ret==thrd_success){
             //networking thread wants us to copy data into buffer, copy data
@@ -440,14 +430,16 @@ int main(int argc, char **argv){
             }
             //inform the thread that we are finished
             cnd_signal(&condidion_mainthread_finished_memcpy);
-        }else if(ret!=thrd_busy){   //proceed normally on thrd_busy
+        }else if(ret!=thrd_busy){   //handle errors !=thrd_success or thrd_busy,
             exit(1);
         }
     }
 	/* Releasing resources */
-	free(network_acqbufferP);
+    //TODO delete mutexes and signals?
+	thrd_join(networkingThread,NULL);
+	free(threadinfP->network_acqBufferP);
+    free(threadinfP);
     free(acqbufferP);
-    //TODO delete mutexes, signal and destroy thread
     rp_Release();
     return 0;
 }
