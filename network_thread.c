@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <assert.h>
 //check if we can represent a float as four bytes, this property is used to send the float over the network
-static_assert(sizeof(uint32_t) == sizeof(float),
+static_assert(sizeof(uint32_t)==sizeof(float),"Float and uint32 are not of the same size, but this property is used when sending over the network!\n");
 
 #define TCP_PORT 4242
 #define TCP_MAX_REC_CHUNK_SIZE 4096
@@ -43,7 +43,7 @@ int offsets[NUMLASERS]={10,50};
 //float to network uint32 conversion routines
 union networkfloat{
     float       flt;
-    uint32_t* uint32;
+    uint32_t  uint32;
 };
 
 uint32_t htonf(float in){
@@ -94,9 +94,10 @@ int recv_all(int socket, void* buffer, size_t length){
     return 0;
 }
 
-int thrd_startServer(void* threadinfp){
+int thrd_startServer(void* threadInfFromMain){
+    struct threadinfo* threadinfP=(struct threadinfo*)threadInfFromMain;
     //lock rawdata buffer until the user request data
-    if(thrd_success!=mtx_lock(threadinfP->mutex_rawdata_bufferP)){
+    if(thrd_success!=mtx_lock(&threadinfP->mutex_network_acqBuffer)){
         exit(1);
     }
 
@@ -304,17 +305,17 @@ int thrd_startServer(void* threadinfp){
                     for(uint32_t datapoint=0;datapoint<threadinfP->network_numOfCharacterizationPoints;datapoint++){
                         printf("before conv2\n");
                         //error happens when dereferencing pointer, possibly because of wrong memory alighment
-                        printf("printing test 0 %p",threadinf.characterisationXP);
+                        printf("printing test 0 %p",threadinfP->network_characterisationXP);
                         /*printf("printing test 1 %x",(int32_t)threadinf.characterisationYP);
                         ((uint32_t*)(threadinf.characterisationYP))[datapoint]=htonf(threadinf.characterisationYP[datapoint]);
                         printf("after conv2\n");*/
                     }
 
-                    send_all(accept_socket_fd,threadinf.characterisationXP,numpoints*sizeof(uint32_t));
-                    send_all(accept_socket_fd,threadinf.characterisationYP,numpoints*sizeof(uint32_t));
-                    if(numpoints){
-                        free(threadinf.characterisationXP);
-                        free(threadinf.characterisationYP);
+                    send_all(accept_socket_fd,threadinfP->network_characterisationXP,threadinfP->network_numOfCharacterizationPoints*sizeof(uint32_t));
+                    send_all(accept_socket_fd,threadinfP->network_characterisationYP,threadinfP->network_numOfCharacterizationPoints*sizeof(uint32_t));
+                    if(threadinfP->network_numOfCharacterizationPoints){
+                        free(threadinfP->network_characterisationXP);
+                        free(threadinfP->network_characterisationYP);
                     }
                     mtx_unlock(&threadinfP->mutex_network_characterization);
                 }

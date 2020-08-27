@@ -307,16 +307,16 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
                 printf("got %d valid points\n",valid_peaks_charact);
 
                 //send data to thread
-                mtx_lock(threadinfP->mutex_characterizationP);
-                *(threadinfP->numOfCharacterizationPointsP)=valid_peaks_charact;
-                threadinfP->characterisationXP=characterisationDataXP;
-                threadinfP->characterisationYP=characterisationDataYP;
-                mtx_unlock(threadinfP->mutex_characterizationP);
+                mtx_lock(&threadinfP->mutex_network_characterization);
+                threadinfP->network_numOfCharacterizationPoints=valid_peaks_charact;
+                threadinfP->network_characterisationXP=characterisationDataXP;
+                threadinfP->network_characterisationYP=characterisationDataYP;
+                mtx_unlock(&threadinfP->mutex_network_characterization);
 
                 //exit the characerization mode, by pretending that the client has selected scan (TODO hacky)
-                mtx_lock(threadinfP->mutex_new_operation_modeP);
-                *(threadinfP->new_operation_modeP)=operation_mode_scan;
-                mtx_unlock(threadinfP->mutex_new_operation_modeP);
+                mtx_lock(&threadinfP->mutex_network_operation_mode);
+                threadinfP->network_operation_mode=operation_mode_scan;
+                mtx_unlock(&threadinfP->mutex_network_operation_mode);
             }
         }break;
         case char_step_finished:
@@ -335,12 +335,12 @@ int main(int argc, char **argv){
     CHK_ERR(rp_Init());
 
     //create inter-thread communication struct in heap memory
-    struct threadinfo threadinfP=(struct threadinfo*)malloc(sizeof(struct threadinfo));
+    struct threadinfo* threadinfP=(struct threadinfo*)malloc(sizeof(struct threadinfo));
 
     //create mutex
     //"using pthreads.h it would be sufficient to pass pointers to mutexes on the main thread's stack, but this is implementation dependent, so I'm using the heap allocated inter-thread commuication struct instead.W
     //TODO check against thrd_success and not 0
-    CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_acqBuffer;,mtx_plain),exit(1));
+    CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_acqBuffer,mtx_plain),exit(1));
     CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_operation_mode,mtx_plain),exit(1));
     CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_settings,mtx_plain),exit(1));
     CHK_ERR_ACT(mtx_init(&threadinfP->mutex_network_characterization,mtx_plain),exit(1));
@@ -357,7 +357,7 @@ int main(int argc, char **argv){
 
     //create thread
     thrd_t networkingThread;
-    if(thrd_success!=thrd_create(&networkingThread,thrd_startServer,(void*)&threadinf)){
+    if(thrd_success!=thrd_create(&networkingThread,thrd_startServer,(void*)threadinfP)){
         exit(1);
     }
 
@@ -408,28 +408,28 @@ int main(int argc, char **argv){
                     doScan(0,acqbufferP);
                 break;
                 case operation_mode_characterise:
-                    doCharacterise(0,acqbufferP,&threadinf);
+                    doCharacterise(0,acqbufferP,threadinfP);
                 break;
                 case operation_mode_lock:
                     printf("Not ready\n");
                 break;
                 default:
-                    printf("Error invalid opmode %d",new_operation_mode);
+                    printf("Error invalid opmode %d",last_operation_mode);
                 break;
             }
 
         }
 
         //Check if network thread is requesting graph data
-        int ret=mtx_trylock(&mutex_network_acqbuffer);
+        int ret=mtx_trylock(&threadinfP->mutex_network_acqBuffer);
         if(ret==thrd_success){
             //networking thread wants us to copy data into buffer, copy data
-            memcpy(network_acqbufferP,acqbufferP,sizeof(float)*ADCBUFFERSIZE);
-            if(thrd_success!=mtx_unlock(&mutex_network_acqbuffer)){
+            memcpy(threadinfP->network_acqBufferP,acqbufferP,sizeof(float)*ADCBUFFERSIZE);
+            if(thrd_success!=mtx_unlock(&threadinfP->mutex_network_acqBuffer)){
                 exit(1);
             }
             //inform the thread that we are finished
-            cnd_signal(&condidion_mainthread_finished_memcpy);
+            cnd_signal(&threadinfP->condidion_mainthread_finished_memcpy);
         }else if(ret!=thrd_busy){   //handle errors !=thrd_success or thrd_busy,
             exit(1);
         }
