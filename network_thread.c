@@ -259,8 +259,12 @@ int thrd_startServer(void* threadInfFromMain){
                         exit(1);
                     }
                     uint32_t opmode=ntohl(((uint32_t*)rec_databuffp)[0]);
-                    if(opmode!=operation_mode_scan&&opmode!=operation_mode_characterise&&opmode!=operation_mode_lock&&opmode!=operation_mode_shutdown){
-                        fprintf(stderr,"Invalid opMode.\n");
+                    if(opmode!=operation_mode_scan_cav&&
+                       opmode!=operation_mode_scan_lsr&&
+                       opmode!=operation_mode_characterise&&
+                       opmode!=operation_mode_lock&&
+                       opmode!=operation_mode_shutdown){
+                        fprintf(stderr,"Invalid opMode\n");
                         close(accept_socket_fd);
                         close(socket_fd);
                         exit(1);
@@ -268,7 +272,7 @@ int thrd_startServer(void* threadInfFromMain){
                     mtx_lock(&threadinfP->mutex_network_operation_mode);
                     threadinfP->network_operation_mode=opmode;
                     mtx_unlock(&threadinfP->mutex_network_operation_mode);
-                    printf("set opmode to %d",opmode);
+                    printf("set opmode to %d\n",opmode);
                     header[0]=htonl(setOpmode_return);
                     header[1]=0;
                     send_all(accept_socket_fd,header,2*sizeof(uint32_t));

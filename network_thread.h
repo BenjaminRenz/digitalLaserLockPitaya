@@ -24,10 +24,11 @@ struct threadinfo{  //the mutexes will protect the memory of the directly follow
 
 enum {
     operation_mode_not_initialized=0,
-    operation_mode_scan=40,
-    operation_mode_characterise=41,
-    operation_mode_lock=42,
-    operation_mode_shutdown=43
+    operation_mode_scan_cav=40,
+    operation_mode_scan_lsr=41,
+    operation_mode_characterise=42,
+    operation_mode_lock=43,
+    operation_mode_shutdown=44
 };
 
 
