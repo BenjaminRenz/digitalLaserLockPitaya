@@ -60,6 +60,11 @@ void        printPeaks(int numpeaks,uint16_t* peaksx,float* peaksy);
 void        packRealIntoFFTcomplex(float* ReInP, float* ReCoOutP);
 void        doCorrelation(float* fft_in_outP, float* corr_luP,int* ooura_fft_ipP, float* ooura_fft_wP);
 
+struct fpointData{
+    uint32_t numOfValidPeaks;
+    float* peaksxP;
+    float* peaksyP;
+};
 
 //operation modes
 void doLock(int firstrun,float* acqbufferP){
@@ -162,7 +167,7 @@ void doCharacterise(int firstrun,float* acqbufferP,struct threadinfo* threadinfP
                     }
                 }
             }
-            
+
             fsortPeaksX(NumScanSteps*MaxNumOfPeaks_Scan_Cav,characterisationDataXP,characterisationDataYP);
             valid_peaks_charact=0;
             for(;valid_peaks_charact<NumScanSteps*MaxNumOfPeaks_Scan_Cav;valid_peaks_charact++){
@@ -492,6 +497,8 @@ int main(int argc, char **argv){
     return 0;
 }
 
+
+
 void SetGenerator(rp_channel_t ScanChannel, float ScanFrequency, float OtherChannelOffset){
     CHK_ERR(rp_GenWaveform(ScanChannel, RP_WAVEFORM_ARBITRARY));
     float* wavetable=(float*)malloc(ADCBUFFERSIZE*sizeof(float));
@@ -570,14 +577,14 @@ void doCorrelation(float* fft_in_outP, float* corr_luP,int* ooura_fft_ipP, float
     return;
 }
 
-void printPeaks(int numpeaks,uint16_t* peaksx,float* peaksy){
-    printf("npeaks found: %d\n",numpeaks);
-    for(int peak=0;peak<numpeaks;peak++){
-        printf("Peak at x=\t%d\t, y=\t%f\t\n",peaksx[peak],peaksy[peak]);
+void printPeaks(struct fpointData peakdat){
+    printf("npeaks found: %d\n",peakdat.numOfValidPeaks);
+    for(int peak=0;peak<peakdat.numOfValidPeaks;peak++){
+        printf("Peak at x=\t%d\t, y=\t%f\t\n",peakdat.peaksxP[peak],peakdat.peaksyP[peak]);
     }
 }
 
-uint16_t get_num_valid_peaks(uint16_t numpeaks,float* peaksyP,float PeakDiscardTreshold,float average){
+/*uint16_t get_num_valid_peaks(uint16_t numpeaks,float* peaksyP,float PeakDiscardTreshold,float average){
     uint16_t numOfValidPeaks=1; //the first peak is always in this selection
     for(uint16_t peak_idx=1;peak_idx<numpeaks;peak_idx++){    //ceck all other points except largest one if they are large enough
         if((peaksyP[0]-average)*PeakDiscardTreshold<(peaksyP[peak_idx]-average)){
@@ -606,8 +613,58 @@ float get_average(int numsamples,float* samplesY){
         average+=samplesY[sample]/(float)numsamples;
     }
     return average;
+}*/
+
+struct fpointData samplePeakNtime(uint32_t SampleOverNbuffers,uint32_t numOfPeaksPerScan,uint32_t peaksForValidCluster,uint32_t numOfPeaksToAverageForUpperLimit,float deadzonePeakwidth,float peakvalidMulti,struct fpointData rawDataInP){
+    static uint32_t runnumber=0;
+    static struct fpointData peakdatReturn;
+    if(!runnumber){ //firstrun
+        peakdatReturn.peaksxP=(float*)malloc(SampleOverNbuffers*numOfPeaksPerScan*sizeof(float));
+        peakdatReturn.peaksyP=(float*)malloc(SampleOverNbuffers*numOfPeaksPerScan*sizeof(float));
+    }
+    struct PeakdataCurrentRun=findPeaks(rawDataInP,numOfPeaksPerScan,deadzonePeakwidth);
+    memcpy(peakdatReturn.peaksxP+numOfPeaksPerScan*runnumber,PeakdataCurrentRun.peaksxP,sizeof(float)*PeakdataCurrentRun.numOfValidPeaks);
+    memcpy(peakdatReturn.peaksyP+numOfPeaksPerScan*runnumber,PeakdataCurrentRun.peaksyP,sizeof(float)*PeakdataCurrentRun.numOfValidPeaks);
+    free(PeakdataCurrentRun.peaksxP);
+    free(PeakdataCurrentRun.peaksyP);
+    if(runnumber!=SampleOverNbuffers-1){
+        return 0;
+    }else{//lastrun evaluate results
+        //get y treshold
+        sortPeaksY(peakdatReturn);
+        float averageUpperLimit=0;
+        for(uint32_t peak=0;peak<numOfPeaksToAverageForUpperLimit;peak++}{
+            averageUpperLimit+=peakdatReturn.peaksyP[SampleOverNbuffers*numOfPeaksPerScan-(1+peak)];
+        }
+        float tresholdForValidPeaks=(averageUpperLimit/numOfPeaksToAverageForUpperLimit)*peakvalidMulti;
+        //sort out all peaks under the y-treshold by asigning a high x-value to them, they will get sorted out by the next xsort
+        uint32_t invalidatedPeaks=0;
+        for(uint32_t peak=0;peak<SampleOverNbuffers*numOfPeaksPerScan;peak++){
+            if(peakdatReturn.peaksyP[peak]<tresholdForValidPeaks){
+                peakdatReturn.peaksxP[peak]=FLT_MAX;
+                invalidatedPeaks++;
+            }
+        }
+        sortPeaksY(peakdatReturn);
+        peakdatReturn.numOfValidPeaks=SampleOverNbuffers*numOfPeaksPerScan-invalidatedPeaks;
+        //identify clusters of peaks
+        //TODO check if abort condition makes sense
+        for(uint32_t peak=0;peak<peakdatReturn.numOfValidPeaks-peaksForValidCluster;peak++)
+            if(peakdatReturn.peaksxP[peakx+peaksForValidCluster]-peakdatReturn.peaksxP[peakx]<deadzonePeakwidth){
+                //cluster is valid, so get all points that belong to it
+                //got all peaks that belong to that cluster, so average over this cluster to get average reading for xposition
+                for(uint32_t peakAverage=0;peakAverage<peaksForValidCluster;peakAverage){
+
+                }
+                peak+=peaksForValidCluster;
+            }
+
+
+        return peakdatReturn;
+    }
 }
 
+//TODO change to fpointData
 float get_median_peakdist(uint16_t numpeaks,uint16_t* peakxP){
     float median_peakdist=0.0f;
     for(uint16_t peak_idx=1;peak_idx<numpeaks;peak_idx++){
@@ -638,82 +695,65 @@ double getDeltatimeS(void){
     return deltatime;
 }
 
-void fsortPeaksX(uint16_t numOfPeaks,float* peaksxP,float* peaksyP){
+//ascending order
+void sortPeaksX(struct fpointData peakdat){
     int swapped_flag;
-    uint16_t numOfSwaps=numOfPeaks;
+    uint16_t numOfSwaps=peakdat.numOfValidPeaks;
     do{
         swapped_flag=0;
         for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
-            if(peaksxP[bubble_offset+1]<peaksxP[bubble_offset]){
+            if(peakdat.peaksxP[bubble_offset+1]<peakdat.peaksxP[bubble_offset]){
                 swapped_flag=1;
                 //swap peaksx
-                float tempx=peaksxP[bubble_offset];
-                peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
-                peaksxP[bubble_offset+1]=tempx;
+                float tempx=peakdat.peaksxP[bubble_offset];
+                peakdat.peaksxP[bubble_offset]=peakdat.peaksxP[bubble_offset+1];
+                peakdat.peaksxP[bubble_offset+1]=tempx;
                 //swap peaksy
-                float tempy=peaksyP[bubble_offset];
-                peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
-                peaksyP[bubble_offset+1]=tempy;
+                float tempy=peakdat.peaksyP[bubble_offset];
+                peakdat.peaksyP[bubble_offset]=peakdat.peaksyP[bubble_offset+1];
+                peakdat.peaksyP[bubble_offset+1]=tempy;
             }
         }
         numOfSwaps--;
     }while(swapped_flag);
 }
 
-void sortPeaksX(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
+//ascending order
+void sortPeaksY(struct fpointData peakdat){
     int swapped_flag;
-    uint16_t numOfSwaps=numOfPeaks;
+    uint32_t numOfSwaps=peakdat.numOfValidPeaks;
     do{
         swapped_flag=0;
-        for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
-            if(peaksxP[bubble_offset+1]<peaksxP[bubble_offset]){
+        for(uint32_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
+            if(peakdat.peaksyP[bubble_offset+1]<peakdat.peaksyP[bubble_offset]){
                 swapped_flag=1;
                 //swap peaksx
-                uint16_t tempx=peaksxP[bubble_offset];
-                peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
-                peaksxP[bubble_offset+1]=tempx;
+                float tempx=peakdat.peaksxP[bubble_offset];
+                peakdat.peaksxP[bubble_offset]=peakdat.peaksxP[bubble_offset+1];
+                peakdat.peaksxP[bubble_offset+1]=tempx;
                 //swap peaksy
-                float tempy=peaksyP[bubble_offset];
-                peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
-                peaksyP[bubble_offset+1]=tempy;
+                float tempy=peakdat.peaksyP[bubble_offset];
+                peakdat.peaksyP[bubble_offset]=peakdat.peaksyP[bubble_offset+1];
+                peakdat.peaksyP[bubble_offset+1]=tempy;
             }
         }
         numOfSwaps--;
     }while(swapped_flag);
 }
 
-void sortPeaksY(uint16_t numOfPeaks,uint16_t* peaksxP,float* peaksyP){
-    int swapped_flag;
-    uint16_t numOfSwaps=numOfPeaks;
-    do{
-        swapped_flag=0;
-        for(uint16_t bubble_offset=0;bubble_offset<numOfSwaps-1;bubble_offset++){
-            if(peaksyP[bubble_offset+1]<peaksyP[bubble_offset]){
-                swapped_flag=1;
-                //swap peaksx
-                uint16_t tempx=peaksxP[bubble_offset];
-                peaksxP[bubble_offset]=peaksxP[bubble_offset+1];
-                peaksxP[bubble_offset+1]=tempx;
-                //swap peaksy
-                float tempy=peaksyP[bubble_offset];
-                peaksyP[bubble_offset]=peaksyP[bubble_offset+1];
-                peaksyP[bubble_offset+1]=tempy;
-            }
-        }
-        numOfSwaps--;
-    }while(swapped_flag);
-}
-
-void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t deadzoneSize,uint16_t* peaksx_returnp,float* peaksy_returnp){
-    for(uint16_t peakNum=0;peakNum<numOfPeaks;peakNum++){
-        uint16_t bestx=0;
-        float    besty;
-        besty=-FLT_MAX;
-        for(uint16_t sampleNum=0;sampleNum<numOfPoints;sampleNum++){
-            //check for deadzone
+struct fpointData findPeaks(struct fpointData inputdat,uint32_t maxNumOfPeaksToFind,float deadzoneSize){
+    struct fpointData peakdat_ret;
+    peakdat_ret.peaksxP=(float*)malloc(maxNumOfPeaksToFind*sizeof(float));
+    peakdat_ret.peaksyP=(float*)malloc(maxNumOfPeaksToFind*sizeof(float));
+    peakdat_ret.numOfValidPeaks=maxNumOfPeaksToFind;
+    for(uint16_t peakFoundSoFar=0;peakFoundSoFar<maxNumOfPeaksToFind;peakFoundSoFar++){
+        float bestx=0;
+        float besty=-FLT_MAX;
+        for(uint16_t sampleNum=0;sampleNum<inputdat.numOfValidPeaks;sampleNum++){
+            //check for deadzone hits
             int deadzoneHit=0;
-            for(int deadzone=0;deadzone<peakNum;deadzone++){
-                if((peaksx_returnp[deadzone]-deadzoneSize)<sampleNum&&sampleNum<(peaksx_returnp[deadzone]+deadzoneSize)){
+            for(int dzCheckNum=0;dzCheckNum<peakFoundSoFar;dzCheckNum++){
+                if((peaksx_returnp[dzCheckNum]-deadzoneSize)<sampleNum&&sampleNum<(peaksx_returnp[dzCheckNum]+deadzoneSize)){
                     deadzoneHit=1;
                 }
             }
@@ -721,13 +761,13 @@ void findPeaks(uint16_t numOfPoints,float* ydata,uint16_t numOfPeaks,uint16_t de
                 continue;
             }
             //check if current point is higher then last one
-            if(besty<ydata[sampleNum]){
-                besty=ydata[sampleNum];
+            if(besty<inputdat.peaksyP[sampleNum]){
+                besty=inputdat.peaksyP[sampleNum];
                 bestx=sampleNum;
             }
         }
-        peaksx_returnp[peakNum]=bestx;
-        peaksy_returnp[peakNum]=besty;
+        peakdat_ret.peaksxP[peakFoundSoFar]=bestx;
+        peakdat_ret.peaksyP[peakFoundSoFar]=besty;
     }
     return;
 }
