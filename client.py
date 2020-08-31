@@ -8,6 +8,8 @@ import struct
 #import ctypes
 from enum import Enum
 import time #for sleep
+from datetime import datetime
+import collections
 #global settings
 oldConnectionsXmlPath="./digiLockPreviousConnections.xml"
 TCP_PORT = 4242
@@ -17,10 +19,11 @@ ADCPRECISION = 10
 app=None
 
 class Opmode(Enum):
-    operation_mode_scan=40
-    operation_mode_characterise=41
-    operation_mode_lock=42
-    operation_mode_shutdown=43
+    operation_mode_scan_cav=40
+    operation_mode_scan_lsr=41
+    operation_mode_characterise=42
+    operation_mode_lock=43
+    operation_mode_shutdown=44
 
 class MessageType(Enum):
     getGraph=0
@@ -125,9 +128,12 @@ class InitialConnectionDialog(PyQt5.QtGui.QDialog):
 
 class MainWindow(PyQt5.QtWidgets.QMainWindow):
     ledit_settings_list=[]
+    scany=list()
+    charx=list()
+    chary=list()
     def __init__(self, *args, **kwargs):
         super(MainWindow, self).__init__( *args, **kwargs)
-        self.setWindowTitle("digitalLock Client")
+        
         
         self.UpperPlotWidget = PlotWidget()
         self.UpperPlotWidget.setBackground('w')
@@ -139,60 +145,95 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.LowerPlotWidget.setLabel('left', 'Offset [V]')
         self.LowerPlotWidget.setLabel('bottom', 'n-th peak')
         
-        self.label_opmode = PyQt5.QtGui.QLabel("Mode of operation: ")
-        self.opmode_scan_button = PyQt5.QtGui.QPushButton("Scan", self)
-        self.opmode_characterize_button = PyQt5.QtGui.QPushButton("Characterize", self)
-        self.opmode_lock_button = PyQt5.QtGui.QPushButton("Lock", self)
-        self.opmode_shutdown_button = PyQt5.QtGui.QPushButton("Shutdown", self)
-        self.opmode_scan_button.clicked.connect(self.on_opmode_scan_click)
-        self.opmode_characterize_button.clicked.connect(self.on_opmode_characterize_click)
-        self.opmode_lock_button.clicked.connect(self.on_opmode_lock_click)
-        self.opmode_shutdown_button.clicked.connect(self.on_opmode_shutdown_click)
         
-        self.UpperButtonLayout=PyQt5.QtGui.QHBoxLayout()
-        self.UpperButtonLayout.addWidget(self.label_opmode)
-        self.UpperButtonLayout.addWidget(self.opmode_scan_button)
-        self.UpperButtonLayout.addWidget(self.opmode_characterize_button)
-        self.UpperButtonLayout.addWidget(self.opmode_lock_button)
-        self.UpperButtonLayout.addWidget(self.opmode_shutdown_button)
-
+        self.UpperCtrlLayout=PyQt5.QtGui.QHBoxLayout()
+        self.label_status = PyQt5.QtGui.QLabel("Status:")
         self.ledit_status = PyQt5.QtGui.QLineEdit()
         self.ledit_status.setReadOnly(True)
+        self.netindicator_status=PyQt5.QtGui.QProgressBar()
+        self.netindicator_status.setMinimum(0)
+        self.netindicator_status.setMaximum(100)
+        self.netindicator_status.setValue(100)
+        self.netindicator_status.setTextVisible(False)
+        self.UpperCtrlLayout.addWidget(self.label_status)
+        self.UpperCtrlLayout.addWidget(self.ledit_status)
+        self.UpperCtrlLayout.addWidget(self.netindicator_status)
         
-        self.label_p = PyQt5.QtGui.QLabel("P: ")
-        self.ledit_p = PyQt5.QtGui.QLineEdit()
-        self.ledit_p.setPlaceholderText("Enter a float")
-        self.ledit_settings_list.append(self.ledit_p)
+        self.CtrlTabWidget=PyQt5.QtGui.QTabWidget()
+        
+        self.OpmodesTabDict=collections.OrderedDict()
+        self.OpmodesTabDict["Scan Cav"]=PyQt5.QtGui.QWidget()
+        self.OpmodesTabDict["Scan Lsr"]=PyQt5.QtGui.QWidget()
+        self.OpmodesTabDict["Characterize"]=PyQt5.QtGui.QWidget()
+        self.OpmodesTabDict["Lock"]=PyQt5.QtGui.QWidget()
+        self.OpmodesTabDict["Shutdown"]=PyQt5.QtGui.QWidget()
+        for key,value in self.OpmodesTabDict.items():
+            self.CtrlTabWidget.addTab(value,key)
+        self.CtrlTabWidget.currentChanged.connect(self.on_Ctrl_Tab_Change)
+        
+        
+
+        
+        #three alternative LowerCtrl layouts, one for each operation mode
+
+        self.LowerCtrlLOCK=PyQt5.QtGui.QHBoxLayout()
+        self.CtrlLock_label_p = PyQt5.QtGui.QLabel("P: ")
+        self.CtrlLock_ledit_p = PyQt5.QtGui.QLineEdit()
+        self.CtrlLock_ledit_p.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.CtrlLock_ledit_p)
        
-        self.label_i = PyQt5.QtGui.QLabel("I: ")
-        self.ledit_i = PyQt5.QtGui.QLineEdit()
-        self.ledit_i.setPlaceholderText("Enter a float")
-        self.ledit_settings_list.append(self.ledit_i)
+        self.CtrlLock_label_i = PyQt5.QtGui.QLabel("I: ")
+        self.CtrlLock_ledit_i = PyQt5.QtGui.QLineEdit()
+        self.CtrlLock_ledit_i.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.CtrlLock_ledit_i)
         
-        self.label_d = PyQt5.QtGui.QLabel("D: ")
-        self.ledit_d = PyQt5.QtGui.QLineEdit()
-        self.ledit_d.setPlaceholderText("Enter a float")
-        self.ledit_settings_list.append(self.ledit_d)
+        self.CtrlLock_label_d = PyQt5.QtGui.QLabel("D: ")
+        self.CtrlLock_ledit_d = PyQt5.QtGui.QLineEdit()
+        self.CtrlLock_ledit_d.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.CtrlLock_ledit_d)
         
-        self.label_set = PyQt5.QtGui.QLabel("SetP: ")
-        self.ledit_set = PyQt5.QtGui.QLineEdit()
-        self.ledit_set.setPlaceholderText("Enter a float")
-        self.ledit_settings_list.append(self.ledit_set)
+        self.CtrlLock_label_set = PyQt5.QtGui.QLabel("SetP: ")
+        self.CtrlLock_ledit_set = PyQt5.QtGui.QLineEdit()
+        self.CtrlLock_ledit_set.setPlaceholderText("Enter a float")
+        self.ledit_settings_list.append(self.CtrlLock_ledit_set)
         
-        self.send_button = PyQt5.QtGui.QPushButton("Send Values", self)
-        self.send_button.clicked.connect(self.on_newSendBtn_click)
+        self.CtrlLock_send_button = PyQt5.QtGui.QPushButton("Send Values", self)
+        self.CtrlLock_send_button.clicked.connect(self.on_newSendBtn_click)
         
-        self.LowerButtonLayout=PyQt5.QtGui.QHBoxLayout()
-        self.LowerButtonLayout.addWidget(self.label_p)
-        self.LowerButtonLayout.addWidget(self.ledit_p)
-        self.LowerButtonLayout.addWidget(self.label_i)
-        self.LowerButtonLayout.addWidget(self.ledit_i)
-        self.LowerButtonLayout.addWidget(self.label_d)
-        self.LowerButtonLayout.addWidget(self.ledit_d)
-        self.LowerButtonLayout.addWidget(self.label_set)
-        self.LowerButtonLayout.addWidget(self.ledit_set)
-        self.LowerButtonLayout.addWidget(self.send_button)
         
+        
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_label_p)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_ledit_p)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_label_i)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_ledit_i)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_label_d)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_ledit_d)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_label_set)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_ledit_set)
+        self.LowerCtrlLOCK.addWidget(self.CtrlLock_send_button)
+        
+        self.OpmodesTabDict["Lock"].setLayout(self.LowerCtrlLOCK)
+        
+        #second possible layout for lowerctrl
+        self.LowerCtrlCHAR=PyQt5.QtGui.QHBoxLayout()
+        self.CtrlCHAR_dump_button = PyQt5.QtGui.QPushButton("save characterization data", self)
+        self.LowerCtrlCHAR.addWidget(self.CtrlCHAR_dump_button)
+        self.CtrlCHAR_dump_button.clicked.connect(self.on_CtrlChar_dump_click)
+
+        self.OpmodesTabDict["Characterize"].setLayout(self.LowerCtrlCHAR)
+        
+        #third possible layout for lowerctrl
+        self.LowerCtrlScanLsr=PyQt5.QtGui.QHBoxLayout()
+        self.LowerCtrlScanCav=PyQt5.QtGui.QHBoxLayout()
+        self.CtrlScanLsr_dump_button = PyQt5.QtGui.QPushButton("save laser scan graph", self)
+        self.CtrlScanCav_dump_button = PyQt5.QtGui.QPushButton("save cavity scan graph", self)
+        self.CtrlScanLsr_dump_button.clicked.connect(self.on_CtrlScan_dump_click)
+        self.CtrlScanCav_dump_button.clicked.connect(self.on_CtrlScan_dump_click)
+        self.LowerCtrlScanLsr.addWidget(self.CtrlScanLsr_dump_button)
+        self.LowerCtrlScanCav.addWidget(self.CtrlScanCav_dump_button)
+        self.OpmodesTabDict["Scan Cav"].setLayout(self.LowerCtrlScanCav)
+        self.OpmodesTabDict["Scan Lsr"].setLayout(self.LowerCtrlScanLsr)
+                
         #init plot widget
         self.x_range=range(ADCBUFFERSIZE)
         y=[0]*ADCBUFFERSIZE
@@ -204,9 +245,8 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.globalLayout=PyQt5.QtGui.QVBoxLayout()
         self.globalLayout.addWidget(self.UpperPlotWidget)
         self.globalLayout.addWidget(self.LowerPlotWidget)
-        self.globalLayout.addLayout(self.UpperButtonLayout)
-        self.globalLayout.addWidget(self.ledit_status)
-        self.globalLayout.addLayout(self.LowerButtonLayout)
+        self.globalLayout.addLayout(self.UpperCtrlLayout)
+        self.globalLayout.addWidget(self.CtrlTabWidget)
         
         self.globalWidget = PyQt5.QtGui.QWidget()
         self.globalWidget.setLayout(self.globalLayout)
@@ -225,6 +265,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
         #place qObject inside this thread
         self.network_thread = NetworkingWorker(self.Ip)
+        self.setWindowTitle(f"digitalLock at IP:{self.Ip}")
         self.network_thread.getGraph_return_signal.connect(self.getGraph_return)
         self.network_thread.getSettings_return_signal.connect(self.getSettings_return)
         self.network_thread.getCharacerization_return_signal.connect(self.getCharacerization_return)
@@ -238,7 +279,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         #WARNING due to thread affinity you must not tamper timers of other threads (call start, stop, etc.)
         #timer to call getGraph repeadietely
         self.graphUpdateTimer=PyQt5.QtCore.QTimer(self)
-        self.graphUpdateTimer.setInterval(4000)
+        self.graphUpdateTimer.setInterval(2000)
         self.graphUpdateTimer.timeout.connect(self.network_thread.getGraph_signal)
         #timer to check for finished characterization
         self.characterizationUpdateTimer=PyQt5.QtCore.QTimer(self)
@@ -249,53 +290,72 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
         self.graphUpdateTimer.start()
 
-    
+    #UI stuff
+    @PyQt5.QtCore.pyqtSlot()
+    def on_Ctrl_Tab_Change(self):
+        tabIdx=self.CtrlTabWidget.currentIndex()
+        key,value=list(self.OpmodesTabDict.items())[tabIdx]
+        print(f" selected widget {key}")
+        if(key=="Scan Lsr"):
+            self.network_thread.set_opmode(Opmode.operation_mode_scan_lsr.value)  
+        elif(key=="Scan Cav"):
+            self.network_thread.set_opmode(Opmode.operation_mode_scan_cav.value)
+        elif(key=="Characterize"):
+            self.characterizationUpdateTimer.start()
+            self.network_thread.set_opmode(Opmode.operation_mode_characterise.value)
+        elif(key=="Lock"):
+            self.network_thread.set_opmode(Opmode.operation_mode_lock.value)
+        else:       #=="shutdown"
+            self.network_thread.set_opmode(Opmode.operation_mode_shutdown.value)
+        
     @PyQt5.QtCore.pyqtSlot()
     def on_newSendBtn_click(self):
         settings=[]
         for ledit in self.ledit_settings_list:
             settings.append(float(ledit.text()))
         self.network_thread.setSettings_signal.emit(settings)
+        
     @PyQt5.QtCore.pyqtSlot()
-    def on_opmode_shutdown_click(self):
-        self.network_thread.set_opmode(Opmode.operation_mode_shutdown.value)
+    def on_CtrlScan_dump_click(self):
+        currentdate=datetime.now()
+        file=open("./"+currentdate.strftime("%Y_%m_%d")+"__"+currentdate.strftime("%H_%M_%S")+"_scandata.csv", "w")
+        for i in range(len(self.scany)):
+            file.write(f"{i} {self.scany[i]:1.10f}\n")
+        file.close()
     @PyQt5.QtCore.pyqtSlot()
-    def on_opmode_scan_click(self):
-        self.network_thread.set_opmode(Opmode.operation_mode_scan.value)
-    @PyQt5.QtCore.pyqtSlot()
-    def on_opmode_characterize_click(self):
-        self.characterizationUpdateTimer.start()
-        self.network_thread.set_opmode(Opmode.operation_mode_characterise.value)
-    @PyQt5.QtCore.pyqtSlot()
-    def on_opmode_lock_click(self):
-        self.network_thread.set_opmode(Opmode.operation_mode_lock.value)
+    def on_CtrlChar_dump_click(self):
+        currentdate=datetime.now()
+        file=open("./"+currentdate.strftime("%Y_%m_%d")+"__"+currentdate.strftime("%H_%M_%S")+"_chardata.csv", "w")
+        for i in range(len(self.chary)):
+            file.write(f"{self.charx[i]:2.10f} {self.chary[i]:2.10f}\n")
+        file.close()
     
+    #callbacks from network thread
     @PyQt5.QtCore.pyqtSlot(list,list)
     def getCharacerization_return(self,listx,listy):
         self.characterizationUpdateTimer.stop()
+        self.charx=listx
+        self.chary=listy
         print(f"got data len x {len(listx)} and len y {len(listy)}")
         self.LowerPlot.setData(listx, listy)
         app.processEvents()    
-        
     @PyQt5.QtCore.pyqtSlot(list)
     def getGraph_return(self,list):
-        self.UpperPlot.setData(self.x_range, list)
+        self.scany=list
+        self.UpperPlot.setData(self.x_range, self.scany)
         app.processEvents()
-        
     @PyQt5.QtCore.pyqtSlot(list)
     def getSettings_return(self,list):
         for i in range(len(self.ledit_settings_list)):
             self.ledit_settings_list[i].setText(str(list[i]))
-            
     @PyQt5.QtCore.pyqtSlot()
     def networkTX_start(self):
-        print("unhandeled networkStart in main")
-        
+        self.netindicator_status.setMaximum(100)
+        self.netindicator_status.setValue(100)
     @PyQt5.QtCore.pyqtSlot()
     def networkTX_end(self):
-        print("unhandeled networkEnd in main")
+        self.netindicator_status.setMaximum(0)
         
-    
 
 
 #see https://stackoverflow.com/questions/20324804/how-to-use-qthread-correctly-in-pyqt-with-movetothread
