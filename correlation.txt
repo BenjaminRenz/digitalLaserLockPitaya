@@ -1,0 +1,59 @@
+import sys
+sys.path.insert(0,'..')
+#from plotlib import plotlib as pltlib
+
+import matplotlib.pyplot as plt
+import csv
+import math
+from scipy.optimize import curve_fit
+import numpy
+import os
+from scipy.fft import fft, ifft
+from scipy import signal
+
+datafile = open("2020_08_28__14_27_09_scandata.csv",encoding="utf-8")
+csv_reader = csv.reader(datafile, delimiter=' ')
+x=[]
+y=[]
+for row in csv_reader:
+    x.append(float(row[0]))
+    y.append(float(row[1]))
+
+x.extend(range(2**14,2**15))
+y.extend([0]*2**14)
+
+
+peakrectangle=[0]*(2**15)
+#for i in range(0,2**13,3833):
+for i in range(0,2**13,3000):
+    for j in range(-10,11):
+        peakrectangle[3*2**13+i+j]=1
+        peakrectangle[3*2**13-(i+j)]=1
+
+lsr2=[0]*(2**15)
+for i in range(0,2**13,3000):
+    for j in range(-3,4):
+        lsr2[2**13-100+i+j]=.2
+        lsr2[2**13-100-(i+j)]=.2
+
+y=[lsr2[i]+y[i] for i in range(len(y))]
+    
+#corr=abs(ifft(fft(y)*fft(peakrectangle)))
+corr=abs(ifft(fft(y)*numpy.conj(fft(peakrectangle))))
+#corr=abs(ifft(fft(lsr2)*numpy.conj(fft(peakrectangle))))
+#corr=signal.correlate(y, peakrectangle, mode='same')
+
+figure = plt.figure()
+plt.xlabel("Current [mA]")
+plt.ylabel("Output power [mW]")
+
+halx=[element-2**13 for element in x]
+plt.plot(halx,corr)
+plt.plot(x[0:2**14],peakrectangle[2**14:2**15])
+plt.plot(x[0:2**14],y[0:2**14])
+#plt.plot(x[0:2**14],lsr2[0:2**14])
+
+
+
+plt.show()
+datafile.close()
