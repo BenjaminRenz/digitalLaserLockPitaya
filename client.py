@@ -1,6 +1,6 @@
 import sys
 import PyQt5
-from pyqtgraph import PlotWidget,plot
+from pyqtgraph import PlotWidget,plot,mkPen
 import os
 import xml.etree.ElementTree as xmlET
 import socket
@@ -136,12 +136,12 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         
         
         self.UpperPlotWidget = PlotWidget()
-        self.UpperPlotWidget.setBackground('w')
+        self.UpperPlotWidget.setBackground("#112233")
         self.UpperPlotWidget.setLabel('left', 'Ch1 [V]')
         self.UpperPlotWidget.setLabel('bottom', 'n-th sample')
         
         self.LowerPlotWidget = PlotWidget()
-        self.LowerPlotWidget.setBackground('w')
+        self.LowerPlotWidget.setBackground("#112233")
         self.LowerPlotWidget.setLabel('left', 'Offset [V]')
         self.LowerPlotWidget.setLabel('bottom', 'n-th peak')
         
@@ -238,8 +238,8 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.x_range=range(ADCBUFFERSIZE)
         y=[0]*ADCBUFFERSIZE
         
-        self.UpperPlot=self.UpperPlotWidget.plot(self.x_range,y)
-        self.LowerPlot=self.LowerPlotWidget.plot(self.x_range,y)
+        self.UpperPlot=self.UpperPlotWidget.plot(self.x_range,y,pen=mkPen("#ff2200"))
+        self.LowerPlot=self.LowerPlotWidget.plot(self.x_range,y,pen=mkPen("#aaff00"))
         
         
         self.globalLayout=PyQt5.QtGui.QVBoxLayout()
@@ -285,8 +285,6 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.characterizationUpdateTimer=PyQt5.QtCore.QTimer(self)
         self.characterizationUpdateTimer.setInterval(8000)
         self.characterizationUpdateTimer.timeout.connect(self.network_thread.getCharacerization_signal)
-        
-        
         
         self.graphUpdateTimer.start()
 
